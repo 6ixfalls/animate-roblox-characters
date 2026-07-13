@@ -21,7 +21,9 @@ The extension includes optional Roblox OAuth/asset networking and a localhost li
 - Blender SHA-256: `ff75c44b572d32328b62095141c6ce6255c4e9b772ee63d46d92280de1edcdc8`
 - Studio RBXM SHA-256: `a85e1ce13b6cb15c2094be8afcf6bd66ab2017e10f42be6ecb95faa20dd93444`
 
-The author shares the files for use but does not state a redistribution license. Therefore the public Git repository does not mirror them. The automated installer downloads them from the author, verifies them, and stores them in a Git-ignored local cache.
+The author shares the files for use but does not state a redistribution license. The public Git repository does not mirror the source `.blend` or `.rbxm`; the installer downloads them from the original attachments and verifies them locally.
+
+The README preview is a rendered documentation example made with this source-pinned rig. It does not contain the editable rig or Studio model. The original rig remains subject to its author's terms.
 
 ## External integrations
 

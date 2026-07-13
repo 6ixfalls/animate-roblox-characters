@@ -36,7 +36,11 @@ python3 animate-roblox-characters/scripts/fetch_assets.py --component r6-ik-fk-v
 
 The downloader accepts only allowlisted HTTPS hosts, writes through a temporary file, checks byte size and SHA-256, and refuses to overwrite an unverified local file. It installs the asset into the ignored `assets/external/` cache. Always copy the cached master into the animation project before editing.
 
-Open the working copy with Blender script auto-execution disabled. Then call `authentic_rig.activate_verified_r6_v222()`. It verifies the complete `.blend` plus every embedded text block before registering the UI and control scripts. Never click “Allow Execution” on an altered copy.
+Open the copied exact master with Blender script auto-execution disabled. Then call `authentic_rig.activate_verified_r6_v222()`. First activation verifies the complete pinned `.blend` and every embedded text block before registering the UI/control scripts. It also creates a random 32-byte key in the version-independent per-user `.animate-roblox-characters` configuration directory and stores only a random lineage identifier plus its HMAC in the working `.blend`. Blender 4.5 and newer releases on the same user account share this key. On crash recovery, the helper requires that local HMAC and revalidates the pinned scripts and control/body structure before issuing a same-session receipt. The key is never bundled, logged, or written into an animation file. Never click “Allow Execution” on an unverified copy.
+
+The HMAC is bound to the random lineage identifier rather than a filename. Save after any activation result with `lineage_updated: true`; afterward, incremented backups and same-session Save As copies remain directly verifiable on the same user account.
+
+If the per-user lineage key is unavailable after a machine/account migration, do not bypass the check or copy custom properties. Open the old file with script auto-execution disabled, inspect it, load only its named armature Action datablock into a fresh exact-master working copy, activate that fresh copy, and repeat the pose/curve/audit/export checks before delivery.
 
 ## Cautioned 2.6.3 security boundary
 
@@ -66,9 +70,31 @@ Blender MCP intentionally allows arbitrary local Python execution:
 ## Audits
 
 ```sh
-python3 animate-roblox-characters/scripts/toolchain.py
+python3 animate-roblox-characters/scripts/toolchain.py --repository-only
+python3 animate-roblox-characters/scripts/toolchain.py --audit-pillow
 python3 animate-roblox-characters/scripts/toolchain.py --audit-archive <addon.zip>
 python3 animate-roblox-characters/scripts/toolchain.py --audit-addon <candidate.py>
 ```
+
+Run the first audit for offline repository readiness. Run `--audit-pillow` with the external Python environment that will execute `build_animation_preview.py`; require `ok: true` and record its exact `pillow_version`. Pillow is deliberately verified outside Blender because GIF encoding is external and Blender's bundled Python need not contain Pillow. After discovering external capabilities and classifying the rig, run the full audit through the persistent Blender MCP Python session. Pass `blender_mcp_available=True` only after an actual Blender MCP arbitrary-Python call succeeds; importing `bpy` by itself does not prove MCP connectivity. Runtime readiness requires both this external MCP attestation and an in-process persistent-GUI Blender check.
+
+Do not run the workflow-aware readiness audit as an ordinary shell command: a shell process is outside Blender and must fail the in-process check. The CLI keeps workflow and capability switches for controlled embedding and test harnesses, but the in-process call below is the sole runtime-readiness procedure.
+
+`r15-bootstrap` is the only named workflow gate in this version. It additionally requires Studio MCP, the Creator Store animation plugin, and all three bundled add-on operators (`rbxanim_import`, `rbxanim_rebuild`, and `rbxanim_export`); an unavailable operator is an error. Pass each availability boolean as true only after that capability has actually been verified. A missing attestation is a failed workflow requirement, not an optional warning. The audit verifies availability claims—it does not replace object and metadata inspection after transfer. For R6 or skinned-FBX paths, omit `required_workflow`, retain the verified Blender MCP and Pillow attestations, and explicitly verify the relevant source and export path: the pinned V2.22 hashes plus the `rbxanim_export` operator for R6, or verified Studio provenance, an armature-deformed mesh, and `bpy.ops.export_scene.fbx` for skinned FBX.
+
+The in-process equivalent for the default R15 path is:
+
+```python
+toolchain.full_audit(
+    required_workflow="r15-bootstrap",
+    blender_mcp_available=True,
+    pillow_available=True,
+    pillow_version="12.3.0",  # Use the exact version reported by --audit-pillow.
+    studio_mcp_available=True,
+    creator_plugin_available=True,
+)
+```
+
+Pass `blender_mcp_available=True` only from code already executing through the discovered Blender MCP connection. Pass the Pillow values only after the separate external audit succeeds; the in-Blender audit consumes that attestation and does not import Pillow. For a non-R15 path, call `toolchain.full_audit(blender_mcp_available=True, pillow_available=True, pillow_version="12.3.0")` through that connection using the exact reported version, then perform the explicit rig and exporter checks described above.
 
 For an untrusted `.blend`, disable Blender's script auto-execution, open the file in the persistent GUI, and call `inspect_blend_security.inspect_current_file()` through MCP. Static review reduces risk but does not prove arbitrary third-party code safe.

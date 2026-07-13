@@ -13,6 +13,7 @@ import json
 import math
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -53,6 +54,13 @@ R6_REQUIRED = {
     "Right Leg",
 }
 
+POSE_TRANSFORM_KEYS = {"location", "rotation_degrees", "rotation_quaternion", "scale"}
+POSE_CHANGE_KEYS = POSE_TRANSFORM_KEYS | {"rotation_mode"}
+EULER_ROTATION_MODES = {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"}
+BLENDER_FRAME_MIN = -1_048_574
+BLENDER_FRAME_MAX = 1_048_574
+MAX_CONTACT_SAMPLES = 100_000
+
 
 def detect_rig_type(bone_names: Iterable[str]) -> str:
     names = set(bone_names)
@@ -61,6 +69,162 @@ def detect_rig_type(bone_names: Iterable[str]) -> str:
     if R6_REQUIRED.issubset(names) and ({"Root", "HumanoidRootPart"} & names):
         return "R6"
     return "CUSTOM"
+
+
+def _finite_integer(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a finite integer frame")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a finite integer frame") from exc
+    if not math.isfinite(numeric) or not numeric.is_integer():
+        raise ValueError(f"{label} must be a finite integer frame")
+    frame = int(numeric)
+    if frame < BLENDER_FRAME_MIN or frame > BLENDER_FRAME_MAX:
+        raise ValueError(
+            f"{label} must be between {BLENDER_FRAME_MIN} and {BLENDER_FRAME_MAX}"
+        )
+    return frame
+
+
+def _normalize_contact_intervals(
+    value: Any,
+    available_bones: Iterable[str],
+) -> dict[str, list[list[int]]] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("contact_intervals must be a bone-to-intervals mapping")
+    available = set(available_bones)
+    normalized: dict[str, list[list[int]]] = {}
+    samples = 0
+    for bone_name, intervals in value.items():
+        if bone_name not in available:
+            raise ValueError(f"Unknown contact bone: {bone_name}")
+        if not isinstance(intervals, (list, tuple)) or not intervals:
+            raise ValueError(f"Contact intervals for {bone_name} must be a non-empty list")
+        normalized_intervals = []
+        for index, interval in enumerate(intervals):
+            if not isinstance(interval, (list, tuple)) or len(interval) != 2:
+                raise ValueError(f"Invalid contact interval for {bone_name}: {interval}")
+            start = _finite_integer(interval[0], f"{bone_name} interval {index} start")
+            end = _finite_integer(interval[1], f"{bone_name} interval {index} end")
+            if start > end:
+                raise ValueError(f"Contact interval start exceeds end for {bone_name}: {start}-{end}")
+            samples += end - start + 1
+            if samples > MAX_CONTACT_SAMPLES:
+                raise ValueError("Contact intervals exceed the maximum audit sample count")
+            normalized_intervals.append([start, end])
+        normalized[str(bone_name)] = normalized_intervals
+    return normalized
+
+
+def _normalized_triplet(value: Any, label: str) -> list[float]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{label} must contain exactly three finite numbers")
+    try:
+        items = list(value)
+    except TypeError as exc:
+        raise ValueError(f"{label} must contain exactly three finite numbers") from exc
+    if len(items) != 3:
+        raise ValueError(f"{label} must contain exactly three finite numbers")
+    try:
+        numbers = [float(item) for item in items]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must contain exactly three finite numbers") from exc
+    if any(not math.isfinite(number) for number in numbers):
+        raise ValueError(f"{label} must contain exactly three finite numbers")
+    return numbers
+
+
+def _normalized_quaternion(value: Any, label: str) -> list[float]:
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{label} must contain four finite numbers in WXYZ order")
+    try:
+        items = [float(item) for item in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must contain four finite numbers in WXYZ order") from exc
+    if len(items) != 4 or any(not math.isfinite(number) for number in items):
+        raise ValueError(f"{label} must contain four finite numbers in WXYZ order")
+    magnitude = math.sqrt(sum(number * number for number in items))
+    if magnitude <= 1e-12:
+        raise ValueError(f"{label} cannot be a zero quaternion")
+    return [number / magnitude for number in items]
+
+
+def validate_pose_payload(payload: dict[str, Any], available_bones: Iterable[str]) -> dict[str, Any]:
+    """Validate and normalize a pose batch completely before Blender mutation."""
+    if not isinstance(payload, dict):
+        raise ValueError("Pose payload must be a mapping")
+    if "frame" not in payload:
+        raise ValueError("Pose payload is missing frame")
+    raw_frame = payload["frame"]
+    if isinstance(raw_frame, bool):
+        raise ValueError("Pose frame must be an integer")
+    try:
+        numeric_frame = float(raw_frame)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Pose frame must be an integer") from exc
+    if not math.isfinite(numeric_frame) or not numeric_frame.is_integer():
+        raise ValueError("Pose frame must be an integer")
+
+    changes_by_bone = payload.get("bones")
+    if not isinstance(changes_by_bone, dict) or not changes_by_bone:
+        raise ValueError("Pose payload must contain a non-empty bones mapping")
+
+    available = set(available_bones)
+    missing = sorted(str(name) for name in changes_by_bone if name not in available)
+    if missing:
+        raise ValueError(f"Unknown pose bones: {', '.join(missing)}")
+
+    interpolation = str(payload.get("interpolation", "CONSTANT")).upper()
+    if interpolation not in {"CONSTANT", "BEZIER"}:
+        raise ValueError("Interpolation must be CONSTANT or BEZIER")
+
+    action = payload.get("action")
+    if action is not None and (not isinstance(action, str) or not action.strip()):
+        raise ValueError("Action name must be a non-empty string")
+
+    normalized_bones: dict[str, dict[str, Any]] = {}
+    for bone_name, changes in changes_by_bone.items():
+        if not isinstance(changes, dict):
+            raise ValueError(f"Changes for {bone_name} must be a mapping")
+        unsupported = sorted(set(changes) - POSE_CHANGE_KEYS)
+        if unsupported:
+            raise ValueError(f"Unsupported pose fields for {bone_name}: {', '.join(unsupported)}")
+        supplied = POSE_TRANSFORM_KEYS & set(changes)
+        if not supplied:
+            raise ValueError(f"No supported transform supplied for {bone_name}")
+        if {"rotation_degrees", "rotation_quaternion"}.issubset(changes):
+            raise ValueError(f"Supply only one rotation representation for {bone_name}")
+        if "rotation_mode" in changes and "rotation_degrees" not in changes:
+            raise ValueError(f"rotation_mode for {bone_name} requires rotation_degrees")
+
+        normalized: dict[str, Any] = {}
+        for field in ("location", "rotation_degrees", "scale"):
+            if field in changes:
+                normalized[field] = _normalized_triplet(changes[field], f"{bone_name}.{field}")
+        if "rotation_quaternion" in changes:
+            normalized["rotation_quaternion"] = _normalized_quaternion(
+                changes["rotation_quaternion"],
+                f"{bone_name}.rotation_quaternion",
+            )
+        if "rotation_degrees" in normalized:
+            rotation_mode = changes.get("rotation_mode")
+            if rotation_mode is not None:
+                rotation_mode = str(rotation_mode).upper()
+                if rotation_mode not in EULER_ROTATION_MODES:
+                    raise ValueError(f"Unsupported Euler rotation mode for {bone_name}: {rotation_mode}")
+                normalized["rotation_mode"] = rotation_mode
+        normalized_bones[str(bone_name)] = normalized
+
+    return {
+        "frame": int(numeric_frame),
+        "bones": normalized_bones,
+        "interpolation": interpolation,
+        "action": action.strip() if isinstance(action, str) else None,
+    }
 
 
 def _require_blender():
@@ -187,11 +351,42 @@ def _action_fcurves(action) -> list[Any]:
 
 def _mesh_animation_paths(bpy) -> list[str]:
     offenders: list[str] = []
+    control_shapes = [
+        pose_bone.custom_shape
+        for obj in bpy.context.scene.objects
+        if obj.type == "ARMATURE" and obj.pose is not None
+        for pose_bone in obj.pose.bones
+        if pose_bone.custom_shape is not None
+    ]
+
+    def inspect_animation_data(owner, label: str) -> None:
+        animation_data = getattr(owner, "animation_data", None)
+        if animation_data is None:
+            return
+        action = animation_data.action
+        if action is not None:
+            curves = _action_fcurves(action)
+            if curves:
+                offenders.extend(
+                    f"{label}:action:{curve.data_path}[{curve.array_index}]" for curve in curves
+                )
+        for track in animation_data.nla_tracks:
+            for strip in track.strips:
+                offenders.append(f"{label}:nla:{track.name}:{strip.name}")
+
     for obj in bpy.context.scene.objects:
-        if obj.type != "MESH" or not obj.animation_data or not obj.animation_data.action:
+        if obj.type != "MESH":
             continue
-        for curve in _action_fcurves(obj.animation_data.action):
-            offenders.append(f"{obj.name}:{curve.data_path}[{curve.array_index}]")
+        # Custom-shape objects are part of the premade control interface, not
+        # character meshes. Their packaged object actions do not animate the
+        # avatar and must not make the authentic R6 master fail its own audit.
+        if any(obj is control_shape for control_shape in control_shapes):
+            continue
+        inspect_animation_data(obj, obj.name)
+        inspect_animation_data(obj.data, f"{obj.name}.data")
+        shape_keys = getattr(obj.data, "shape_keys", None)
+        if shape_keys is not None:
+            inspect_animation_data(shape_keys, f"{obj.name}.shape_keys")
     return sorted(offenders)
 
 
@@ -275,12 +470,23 @@ def apply_pose(payload: dict[str, Any]) -> dict[str, Any]:
     bpy, _Vector = _require_blender()
     try:
         armature = _select_armature(bpy, payload.get("armature"))
-        frame = int(payload["frame"])
-        bone_changes = payload["bones"]
-    except (KeyError, TypeError, ValueError) as exc:
+        validated = validate_pose_payload(payload, armature.pose.bones.keys())
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
         return _error(f"Invalid pose payload: {exc}")
-    if not isinstance(bone_changes, dict) or not bone_changes:
-        return _error("Pose payload must contain a non-empty bones mapping")
+    frame = validated["frame"]
+    bone_changes = validated["bones"]
+    interpolation = validated["interpolation"]
+
+    for bone_name, changes in bone_changes.items():
+        if "rotation_degrees" not in changes or "rotation_mode" in changes:
+            continue
+        configured_mode = armature.pose.bones[bone_name].rotation_mode
+        if configured_mode not in EULER_ROTATION_MODES:
+            return _error(
+                f"{bone_name} uses {configured_mode}; supply rotation_quaternion instead of rotation_degrees",
+                armature=armature.name,
+            )
+        changes["rotation_mode"] = configured_mode
 
     authenticity = inspect_authenticity(armature)
     if not authenticity["authentic_ready"]:
@@ -291,14 +497,10 @@ def apply_pose(payload: dict[str, Any]) -> dict[str, Any]:
             metrics={"authenticity": authenticity},
         )
 
-    missing = sorted(name for name in bone_changes if name not in armature.pose.bones)
-    if missing:
-        return _error(f"Unknown pose bones: {', '.join(missing)}", armature=armature.name)
-
     _activate_pose_mode(bpy, armature)
     scene = bpy.context.scene
     scene.frame_set(frame)
-    action = _ensure_action(bpy, armature, payload.get("action"))
+    action = _ensure_action(bpy, armature, validated["action"])
     keyed_channels = []
 
     for bone_name, changes in bone_changes.items():
@@ -308,21 +510,20 @@ def apply_pose(payload: dict[str, Any]) -> dict[str, Any]:
             pose_bone.keyframe_insert(data_path="location", frame=frame, group=bone_name)
             keyed_channels.append(f"{bone_name}.location")
         if "rotation_degrees" in changes:
-            rotation_mode = changes.get("rotation_mode", "XYZ")
+            rotation_mode = changes["rotation_mode"]
             pose_bone.rotation_mode = rotation_mode
             pose_bone.rotation_euler = [math.radians(float(value)) for value in changes["rotation_degrees"]]
             pose_bone.keyframe_insert(data_path="rotation_euler", frame=frame, group=bone_name)
             keyed_channels.append(f"{bone_name}.rotation_euler")
+        if "rotation_quaternion" in changes:
+            pose_bone.rotation_mode = "QUATERNION"
+            pose_bone.rotation_quaternion = changes["rotation_quaternion"]
+            pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame, group=bone_name)
+            keyed_channels.append(f"{bone_name}.rotation_quaternion")
         if "scale" in changes:
             pose_bone.scale = changes["scale"]
             pose_bone.keyframe_insert(data_path="scale", frame=frame, group=bone_name)
             keyed_channels.append(f"{bone_name}.scale")
-        if not ({"location", "rotation_degrees", "scale"} & set(changes)):
-            return _error(f"No supported transform supplied for {bone_name}", armature=armature.name)
-
-    interpolation = str(payload.get("interpolation", "CONSTANT")).upper()
-    if interpolation not in {"CONSTANT", "BEZIER"}:
-        return _error("Interpolation must be CONSTANT or BEZIER", armature=armature.name)
     changed_points = _set_frame_interpolation(action, frame, interpolation)
     scene.frame_set(frame)
     bpy.context.view_layer.update()
@@ -337,6 +538,7 @@ def apply_pose(payload: dict[str, Any]) -> dict[str, Any]:
             output_directory=render_directory,
             pose_label=str(payload.get("pose_label", f"frame-{frame}")),
             frame=frame,
+            front_direction=payload.get("review_front_direction"),
         )
         if review["ok"]:
             artifacts.update(review["artifacts"])
@@ -399,6 +601,8 @@ def _review_collection(bpy):
     if collection is None:
         collection = bpy.data.collections.new("Review")
         bpy.context.scene.collection.children.link(collection)
+    elif collection.name not in bpy.context.scene.collection.children:
+        bpy.context.scene.collection.children.link(collection)
     return collection
 
 
@@ -415,25 +619,35 @@ def _ensure_camera(bpy, name: str, collection):
         data = bpy.data.cameras.new(name)
         camera = bpy.data.objects.new(name, data)
         collection.objects.link(camera)
+    elif camera.name not in collection.objects:
+        collection.objects.link(camera)
     camera.data.type = "ORTHO"
     return camera
 
 
-def _ensure_review_lighting(bpy, collection, center) -> None:
-    if any(obj.type == "LIGHT" for obj in bpy.context.scene.objects):
-        return
-    for name, offset, energy in (
-        ("Review_Key", (4, -6, 7), 900),
-        ("Review_Fill", (-4, -2, 3), 500),
+def _ensure_review_lighting(bpy, collection, center):
+    lights = []
+    for name, offset, energy, size in (
+        ("Review_Key", (4, -6, 7), 900, 4.0),
+        ("Review_Fill", (-4, -2, 3), 500, 5.0),
     ):
-        data = bpy.data.lights.new(name, type="AREA")
-        data.energy = energy
-        data.shape = "DISK"
-        data.size = 4.0
-        light = bpy.data.objects.new(name, data)
-        collection.objects.link(light)
+        light = bpy.data.objects.get(name)
+        if light is not None and light.type != "LIGHT":
+            raise ValueError(f"Review object {name} exists but is not a light")
+        if light is None:
+            data = bpy.data.lights.new(name, type="AREA")
+            light = bpy.data.objects.new(name, data)
+            collection.objects.link(light)
+        elif light.name not in collection.objects:
+            collection.objects.link(light)
+        light.data.type = "AREA"
+        light.data.energy = energy
+        light.data.shape = "DISK"
+        light.data.size = size
         light.location = center + type(center)(offset)
         _look_at(light, center)
+        lights.append(light)
+    return lights
 
 
 def render_pose_views(
@@ -441,6 +655,7 @@ def render_pose_views(
     output_directory: str | Path,
     pose_label: str,
     frame: int | None = None,
+    front_direction: Iterable[float] | None = None,
 ) -> dict[str, Any]:
     """Render deterministic front and side review images for the current pose."""
     bpy, Vector = _require_blender()
@@ -458,18 +673,36 @@ def render_pose_views(
     dimensions = maximum - minimum
     ortho_scale = max(float(dimensions.z) * 1.18, float(dimensions.x) * 1.45, float(dimensions.y) * 1.45, 4.0)
     distance = max(10.0, ortho_scale * 1.8)
-    collection = _review_collection(bpy)
-    front = _ensure_camera(bpy, "Review_Front", collection)
-    side = _ensure_camera(bpy, "Review_Side", collection)
-    authenticity = inspect_authenticity(armature)
-    front_y = distance if authenticity["source"] == "community-r6-ik-fk-control-rig" else -distance
-    front.location = center + Vector((0, front_y, 0))
-    side.location = center + Vector((distance, 0, 0))
-    front.data.ortho_scale = ortho_scale
-    side.data.ortho_scale = ortho_scale
-    _look_at(front, center)
-    _look_at(side, center)
-    _ensure_review_lighting(bpy, collection, center)
+    try:
+        collection = _review_collection(bpy)
+        front = _ensure_camera(bpy, "Review_Front", collection)
+        side = _ensure_camera(bpy, "Review_Side", collection)
+        authenticity = inspect_authenticity(armature)
+        if front_direction is None:
+            if authenticity["source"] != "community-r6-ik-fk-control-rig":
+                raise ValueError(
+                    "Non-R6-V2.22 pose review requires front_direction established from visible-model inspection"
+                )
+            forward = Vector((0.0, 1.0, 0.0))
+        else:
+            values = tuple(float(value) for value in front_direction)
+            if len(values) != 3:
+                raise ValueError("front_direction must contain three coordinates")
+            forward = Vector(values)
+            forward.z = 0.0
+            if forward.length <= 1e-8:
+                raise ValueError("front_direction must have a nonzero horizontal component")
+            forward.normalize()
+        side_direction = Vector((forward.y, -forward.x, 0.0))
+        front.location = center + forward * distance
+        side.location = center + side_direction * distance
+        front.data.ortho_scale = ortho_scale
+        side.data.ortho_scale = ortho_scale
+        _look_at(front, center)
+        _look_at(side, center)
+        review_lights = _ensure_review_lighting(bpy, collection, center)
+    except (AttributeError, TypeError, ValueError) as exc:
+        return _error(f"Unable to configure review cameras and lights: {exc}", armature=armature.name)
 
     scene = bpy.context.scene
     previous = {
@@ -479,18 +712,31 @@ def render_pose_views(
         "resolution_y": scene.render.resolution_y,
         "resolution_percentage": scene.render.resolution_percentage,
         "engine": scene.render.engine,
+        "file_format": scene.render.image_settings.file_format,
+        "color_mode": scene.render.image_settings.color_mode,
+        "world_color": tuple(scene.world.color) if scene.world else None,
     }
+    non_review_light_states = [
+        (obj, obj.hide_render)
+        for obj in bpy.context.scene.objects
+        if obj.type == "LIGHT" and obj not in review_lights
+    ]
 
     safe_label = re.sub(r"[^A-Za-z0-9_-]+", "-", pose_label).strip("-") or "pose"
     frame_number = int(scene.frame_current)
     artifacts = {}
     errors = []
     try:
+        for light, _hidden in non_review_light_states:
+            light.hide_render = True
         _set_available_render_engine(scene)
         scene.render.resolution_x = 512
         scene.render.resolution_y = 512
         scene.render.resolution_percentage = 100
         scene.render.image_settings.file_format = "PNG"
+        scene.render.image_settings.color_mode = "RGB"
+        if scene.world:
+            scene.world.color = (0.035, 0.035, 0.05)
         for view_name, camera in (("front", front), ("side", side)):
             path = output_dir / f"{safe_label}-f{frame_number:04d}-{view_name}.png"
             scene.camera = camera
@@ -503,19 +749,29 @@ def render_pose_views(
     except Exception as exc:  # Blender operators raise implementation-specific errors
         errors.append(f"Review render failed: {exc}")
     finally:
+        for light, hidden in non_review_light_states:
+            light.hide_render = hidden
         scene.camera = previous["camera"]
         scene.render.filepath = previous["filepath"]
         scene.render.resolution_x = previous["resolution_x"]
         scene.render.resolution_y = previous["resolution_y"]
         scene.render.resolution_percentage = previous["resolution_percentage"]
         scene.render.engine = previous["engine"]
+        scene.render.image_settings.file_format = previous["file_format"]
+        scene.render.image_settings.color_mode = previous["color_mode"]
+        if scene.world and previous["world_color"] is not None:
+            scene.world.color = previous["world_color"]
 
     return {
         "ok": not errors and set(artifacts) == {"front", "side"},
         "rig_type": detect_rig_type(armature.data.bones.keys()),
         "armature": armature.name,
         "bones": {},
-        "metrics": {"frame": frame_number, "ortho_scale": round(ortho_scale, 6)},
+        "metrics": {
+            "frame": frame_number,
+            "ortho_scale": round(ortho_scale, 6),
+            "front_direction": _as_list(forward),
+        },
         "artifacts": artifacts,
         "warnings": [],
         "errors": errors,
@@ -529,6 +785,8 @@ def _ensure_area_light(bpy, collection, name: str, location, target, energy: flo
     if light is None:
         data = bpy.data.lights.new(name, type="AREA")
         light = bpy.data.objects.new(name, data)
+        collection.objects.link(light)
+    elif light.name not in collection.objects:
         collection.objects.link(light)
     light.data.type = "AREA"
     light.data.energy = energy
@@ -596,16 +854,19 @@ def render_animation_preview_frames(
     if resolution < 64 or resolution > 4096 or scale <= 0:
         return _error("Preview resolution or orthographic scale is invalid", armature=armature.name)
 
-    collection = _review_collection(bpy)
-    camera = _ensure_camera(bpy, "Review_GIF_Camera", collection)
-    camera.location = camera_position
-    camera.data.ortho_scale = scale
-    _look_at(camera, target)
-    review_lights = [
-        _ensure_area_light(bpy, collection, "Review_GIF_Key", target + Vector((4.5, 5.5, 6.5)), target, 1000, 4.0, (1.0, 0.88, 0.78)),
-        _ensure_area_light(bpy, collection, "Review_GIF_Fill", target + Vector((-4.0, 3.0, 3.5)), target, 450, 5.0, (0.68, 0.78, 1.0)),
-        _ensure_area_light(bpy, collection, "Review_GIF_Rim", target + Vector((-2.5, -5.0, 6.0)), target, 800, 3.0, (0.75, 0.85, 1.0)),
-    ]
+    try:
+        collection = _review_collection(bpy)
+        camera = _ensure_camera(bpy, "Review_GIF_Camera", collection)
+        camera.location = camera_position
+        camera.data.ortho_scale = scale
+        _look_at(camera, target)
+        review_lights = [
+            _ensure_area_light(bpy, collection, "Review_GIF_Key", target + Vector((4.5, 5.5, 6.5)), target, 1000, 4.0, (1.0, 0.88, 0.78)),
+            _ensure_area_light(bpy, collection, "Review_GIF_Fill", target + Vector((-4.0, 3.0, 3.5)), target, 450, 5.0, (0.68, 0.78, 1.0)),
+            _ensure_area_light(bpy, collection, "Review_GIF_Rim", target + Vector((-2.5, -5.0, 6.0)), target, 800, 3.0, (0.75, 0.85, 1.0)),
+        ]
+    except (AttributeError, TypeError, ValueError) as exc:
+        return _error(f"Unable to configure GIF review camera and lights: {exc}", armature=armature.name)
 
     scene = bpy.context.scene
     previous = {
@@ -692,8 +953,10 @@ def polish_curves(armature_name: str | None = None, action_name: str | None = No
         armature = _select_armature(bpy, armature_name)
     except ValueError as exc:
         return _error(str(exc), armature=armature_name)
-    action = bpy.data.actions.get(action_name) if action_name else None
-    if action is None and armature.animation_data:
+    action = bpy.data.actions.get(action_name) if action_name is not None else None
+    if action_name is not None and action is None:
+        return _error(f"Action not found: {action_name}", armature=armature.name)
+    if action_name is None and action is None and armature.animation_data:
         action = armature.animation_data.action
     if action is None:
         return _error("No action is available to polish", armature=armature.name)
@@ -738,67 +1001,189 @@ def polish_curves(armature_name: str | None = None, action_name: str | None = No
     }
 
 
-def _endpoint_metrics(bpy, armature, start: int, end: int):
+def _pose_bone_name_from_data_path(data_path: str) -> str | None:
+    pattern = re.compile(r'^pose\.bones\["((?:\\.|[^"\\])*)"\]')
+    match = pattern.match(data_path)
+    if match is None:
+        return None
+    try:
+        return str(json.loads(f'"{match.group(1)}"'))
+    except json.JSONDecodeError:
+        # Blender's data paths normally use JSON-compatible escaping. Treat an
+        # invalid third-party path as non-pose animation instead of guessing.
+        return None
+
+
+def _animated_pose_bone_names(action) -> set[str]:
+    """Return pose-bone names addressed by an action's FCurves."""
+    return {
+        bone_name
+        for curve in _action_fcurves(action)
+        if (bone_name := _pose_bone_name_from_data_path(curve.data_path)) is not None
+    }
+
+
+def _endpoint_metrics(bpy, armature, action, start: int, end: int):
+    """Measure loop endpoints from Blender's evaluated, constrained pose."""
     current = int(bpy.context.scene.frame_current)
     snapshots = {}
-    for frame in (start, end):
-        bpy.context.scene.frame_set(frame)
-        bpy.context.view_layer.update()
-        snapshots[frame] = {
-            pose_bone.name: pose_bone.matrix_basis.copy()
-            for pose_bone in armature.pose.bones
-            if pose_bone.bone.use_deform
-        }
-    bpy.context.scene.frame_set(current)
+    animated_names = _animated_pose_bone_names(action)
+    deform_names = {pose_bone.name for pose_bone in armature.pose.bones if pose_bone.bone.use_deform}
+    sampled_names = sorted((animated_names | deform_names) & set(armature.pose.bones.keys()))
+    missing_names = sorted(animated_names - set(armature.pose.bones.keys()))
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    try:
+        for frame in (start, end):
+            bpy.context.scene.frame_set(frame)
+            bpy.context.view_layer.update()
+            evaluated = armature.evaluated_get(depsgraph)
+            snapshots[frame] = {
+                bone_name: evaluated.pose.bones[bone_name].matrix.copy()
+                for bone_name in sampled_names
+            }
+    finally:
+        bpy.context.scene.frame_set(current)
     max_location = 0.0
     max_rotation = 0.0
+    max_scale = 0.0
     worst_location = None
     worst_rotation = None
+    worst_scale = None
     for bone_name in snapshots[start]:
-        start_location, start_rotation, _start_scale = snapshots[start][bone_name].decompose()
-        end_location, end_rotation, _end_scale = snapshots[end][bone_name].decompose()
+        start_location, start_rotation, start_scale = snapshots[start][bone_name].decompose()
+        end_location, end_rotation, end_scale = snapshots[end][bone_name].decompose()
         location_difference = (end_location - start_location).length
         rotation_difference = math.degrees(start_rotation.rotation_difference(end_rotation).angle)
+        scale_difference = (end_scale - start_scale).length
         if location_difference > max_location:
             max_location = location_difference
             worst_location = bone_name
         if rotation_difference > max_rotation:
             max_rotation = rotation_difference
             worst_rotation = bone_name
+        if scale_difference > max_scale:
+            max_scale = scale_difference
+            worst_scale = bone_name
     return {
         "location_difference": round(max_location, 8),
         "rotation_difference_degrees": round(max_rotation, 8),
+        "scale_difference": round(max_scale, 8),
         "worst_location_bone": worst_location,
         "worst_rotation_bone": worst_rotation,
+        "worst_scale_bone": worst_scale,
+        "sampled_bones": sampled_names,
+        "animated_bones_missing_from_armature": missing_names,
     }
 
 
-def _contact_drift(bpy, armature, contact_intervals: dict[str, Any]):
+def _loop_tangent_metrics(action, start: int, end: int):
+    def point_at(curve, frame: int):
+        return next(
+            (point for point in curve.keyframe_points if abs(float(point.co.x) - frame) < 1e-5),
+            None,
+        )
+
+    def slope(point, side: str) -> float:
+        handle = point.handle_right if side == "RIGHT" else point.handle_left
+        dx = float(handle.x - point.co.x)
+        dy = float(handle.y - point.co.y)
+        return dy / dx if abs(dx) > 1e-8 else 0.0
+
+    max_difference = 0.0
+    worst_curve = None
+    missing_endpoints = []
+    checked = 0
+    for curve in _action_fcurves(action):
+        if not curve.data_path.startswith('pose.bones["'):
+            continue
+        first = point_at(curve, start)
+        closing = point_at(curve, end)
+        label = f"{curve.data_path}[{curve.array_index}]"
+        if first is None or closing is None:
+            missing_endpoints.append(label)
+            continue
+        difference = abs(slope(first, "RIGHT") - slope(closing, "LEFT"))
+        checked += 1
+        if difference > max_difference:
+            max_difference = difference
+            worst_curve = label
+    return {
+        "curves_checked": checked,
+        "missing_endpoint_curves": missing_endpoints,
+        "max_slope_difference": round(max_difference, 8),
+        "worst_curve": worst_curve,
+    }
+
+
+def _loop_tangent_findings(tangents: dict[str, Any], audit_stage: str):
+    """Return stage-aware failures without blocking pre-polish constant poses."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    if tangents["missing_endpoint_curves"]:
+        errors.append("One or more animated curves lack explicit loop endpoint keys")
+    if tangents["max_slope_difference"] > 0.001:
+        message = "Loop endpoint tangent difference exceeds 0.001 value/frame"
+        if audit_stage == "FINAL":
+            errors.append(message)
+        else:
+            warnings.append(f"{message}; correct it during Bezier polish before the final audit")
+    return errors, warnings
+
+
+def _contact_drift(
+    bpy,
+    armature,
+    contact_intervals: dict[str, Any],
+    scene_units_per_stud: float,
+):
     current = int(bpy.context.scene.frame_current)
     depsgraph = bpy.context.evaluated_depsgraph_get()
     results = {}
     errors = []
-    for bone_name, intervals in contact_intervals.items():
-        if bone_name not in armature.pose.bones:
-            errors.append(f"Unknown contact bone: {bone_name}")
-            continue
-        bone_results = []
-        for interval in intervals:
-            if len(interval) != 2:
-                errors.append(f"Invalid contact interval for {bone_name}: {interval}")
+    try:
+        for bone_name, intervals in contact_intervals.items():
+            if bone_name not in armature.pose.bones:
+                errors.append(f"Unknown contact bone: {bone_name}")
                 continue
-            start, end = int(interval[0]), int(interval[1])
-            positions = []
-            for frame in range(start, end + 1):
-                bpy.context.scene.frame_set(frame)
-                evaluated = armature.evaluated_get(depsgraph)
-                pose_bone = evaluated.pose.bones[bone_name]
-                positions.append(evaluated.matrix_world @ pose_bone.tail)
-            origin = positions[0]
-            max_drift = max((position - origin).length for position in positions)
-            bone_results.append({"start": start, "end": end, "max_drift": round(float(max_drift), 8)})
-        results[bone_name] = bone_results
-    bpy.context.scene.frame_set(current)
+            if not isinstance(intervals, (list, tuple)):
+                errors.append(f"Contact intervals for {bone_name} must be a list")
+                continue
+            if not intervals:
+                errors.append(f"Contact intervals for {bone_name} cannot be empty")
+                continue
+            bone_results = []
+            for interval in intervals:
+                if not isinstance(interval, (list, tuple)) or len(interval) != 2:
+                    errors.append(f"Invalid contact interval for {bone_name}: {interval}")
+                    continue
+                try:
+                    start = _finite_integer(interval[0], f"{bone_name} interval start")
+                    end = _finite_integer(interval[1], f"{bone_name} interval end")
+                except ValueError:
+                    errors.append(f"Invalid contact interval for {bone_name}: {interval}")
+                    continue
+                if start > end:
+                    errors.append(f"Contact interval start exceeds end for {bone_name}: {start}-{end}")
+                    continue
+                positions = []
+                for frame in range(start, end + 1):
+                    bpy.context.scene.frame_set(frame)
+                    evaluated = armature.evaluated_get(depsgraph)
+                    pose_bone = evaluated.pose.bones[bone_name]
+                    positions.append(evaluated.matrix_world @ pose_bone.tail)
+                origin = positions[0]
+                max_drift = max((position - origin).length for position in positions)
+                bone_results.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "max_drift_scene_units": round(float(max_drift), 8),
+                        "max_drift_studs": round(float(max_drift) / scene_units_per_stud, 8),
+                    }
+                )
+            results[bone_name] = bone_results
+    finally:
+        bpy.context.scene.frame_set(current)
     return results, errors
 
 
@@ -808,6 +1193,11 @@ def audit_action(
     loop_start: int | None = None,
     loop_end: int | None = None,
     contact_intervals: dict[str, Any] | None = None,
+    contact_drift_threshold: float = 0.02,
+    scene_units_per_stud: float | None = None,
+    loop_required: bool | None = None,
+    contacts_required: bool | None = None,
+    audit_stage: str = "FINAL",
 ) -> dict[str, Any]:
     """Audit hierarchy-safe curves, interpolation, loop seam, and foot drift."""
     bpy, _Vector = _require_blender()
@@ -815,18 +1205,78 @@ def audit_action(
         armature = _select_armature(bpy, armature_name)
     except ValueError as exc:
         return _error(str(exc), armature=armature_name)
-    action = bpy.data.actions.get(action_name) if action_name else None
-    if action is None and armature.animation_data:
+    action = bpy.data.actions.get(action_name) if action_name is not None else None
+    if action_name is not None and action is None:
+        return _error(f"Action not found: {action_name}", armature=armature.name)
+    if action_name is None and action is None and armature.animation_data:
         action = armature.animation_data.action
     if action is None:
         return _error("No action is available to audit", armature=armature.name)
+    try:
+        contact_drift_threshold = float(contact_drift_threshold)
+    except (TypeError, ValueError):
+        return _error("Contact drift threshold must be a positive finite number", armature=armature.name)
+    if not math.isfinite(contact_drift_threshold) or contact_drift_threshold <= 0:
+        return _error("Contact drift threshold must be a positive finite number", armature=armature.name)
+    if not isinstance(audit_stage, str) or audit_stage.upper() not in {"BLOCKING", "FINAL"}:
+        return _error("audit_stage must be BLOCKING or FINAL", armature=armature.name)
+    audit_stage = audit_stage.upper()
+    if audit_stage == "FINAL" and (loop_required is None or contacts_required is None):
+        return _error(
+            "Final audit requires explicit loop_required and contacts_required booleans",
+            armature=armature.name,
+        )
+    if loop_required is None:
+        loop_required = False
+    if contacts_required is None:
+        contacts_required = False
+    if not isinstance(loop_required, bool) or not isinstance(contacts_required, bool):
+        return _error("loop_required and contacts_required must be booleans", armature=armature.name)
+    try:
+        if loop_start is not None or loop_end is not None:
+            if loop_start is None or loop_end is None:
+                raise ValueError("Loop audit requires both loop_start and loop_end")
+            loop_start = _finite_integer(loop_start, "loop_start")
+            loop_end = _finite_integer(loop_end, "loop_end")
+            if loop_end <= loop_start:
+                raise ValueError("Loop audit requires loop_start < loop_end")
+        contact_intervals = _normalize_contact_intervals(
+            contact_intervals,
+            armature.pose.bones.keys(),
+        )
+    except ValueError as exc:
+        return _error(str(exc), armature=armature.name)
+
+    authenticity = inspect_authenticity(armature)
+    units_source = None
+    if scene_units_per_stud is None and contact_intervals:
+        stored_units = armature.get("scene_units_per_stud")
+        if stored_units is not None:
+            scene_units_per_stud = stored_units
+            units_source = "armature-custom-property"
+        elif (
+            authenticity.get("source") == "community-r6-ik-fk-control-rig"
+            and authenticity.get("authentic_ready") is True
+        ):
+            scene_units_per_stud = 1.0
+            units_source = "verified-r6-v2.22-default"
+    elif scene_units_per_stud is not None:
+        units_source = "explicit-audit-argument"
+    if scene_units_per_stud is not None:
+        try:
+            scene_units_per_stud = float(scene_units_per_stud)
+        except (TypeError, ValueError):
+            return _error("scene_units_per_stud must be a positive finite number", armature=armature.name)
+        if not math.isfinite(scene_units_per_stud) or scene_units_per_stud <= 0:
+            return _error("scene_units_per_stud must be a positive finite number", armature=armature.name)
 
     curves_for_action = _action_fcurves(action)
-    non_pose_curves = [
-        f"{curve.data_path}[{curve.array_index}]"
-        for curve in curves_for_action
-        if not curve.data_path.startswith('pose.bones["')
-    ]
+    available_bones = set(armature.pose.bones.keys())
+    non_pose_curves = []
+    for curve in curves_for_action:
+        target_bone = _pose_bone_name_from_data_path(curve.data_path)
+        if target_bone is None or target_bone not in available_bones:
+            non_pose_curves.append(f"{curve.data_path}[{curve.array_index}]")
     interpolation = {"BEZIER": 0, "LINEAR": 0, "CONSTANT": 0, "OTHER": 0}
     for curve in curves_for_action:
         for point in curve.keyframe_points:
@@ -840,6 +1290,18 @@ def audit_action(
         "interpolation": interpolation,
         "non_pose_curves": non_pose_curves,
         "mesh_animation_curves": mesh_curves,
+        "contact_drift_threshold_studs": contact_drift_threshold,
+        "scene_units_per_stud": scene_units_per_stud,
+        "scene_units_per_stud_source": units_source,
+        "contact_drift_threshold_scene_units": (
+            contact_drift_threshold * scene_units_per_stud
+            if scene_units_per_stud is not None
+            else None
+        ),
+        "loop_required": loop_required,
+        "contacts_required": contacts_required,
+        "audit_stage": audit_stage,
+        "authenticity": authenticity,
     }
     errors = []
     warnings = []
@@ -849,36 +1311,80 @@ def audit_action(
         errors.append("One or more mesh objects contain animation curves")
     if interpolation["LINEAR"]:
         errors.append("Final action contains LINEAR keyframes")
-    if interpolation["CONSTANT"]:
+    if interpolation["CONSTANT"] and audit_stage == "FINAL":
         errors.append("Final action still contains CONSTANT blocking keyframes")
+    if interpolation["OTHER"]:
+        errors.append("Final action contains non-Bezier interpolation")
     if not curves_for_action:
         errors.append("The action contains no curves")
+    if not authenticity.get("authentic_ready"):
+        errors.append("The action is not bound to an authentic_ready Roblox rig")
 
-    if loop_start is not None or loop_end is not None:
-        if loop_start is None or loop_end is None or int(loop_end) <= int(loop_start):
-            errors.append("Loop audit requires loop_start < loop_end")
-        else:
-            seam = _endpoint_metrics(bpy, armature, int(loop_start), int(loop_end))
+    created_animation_data = armature.animation_data is None
+    if created_animation_data:
+        armature.animation_data_create()
+    previous_action = armature.animation_data.action
+    nla_states = [(track, track.mute) for track in armature.animation_data.nla_tracks]
+    try:
+        armature.animation_data.action = action
+        for track, _mute in nla_states:
+            track.mute = True
+
+        if loop_start is not None or loop_end is not None:
+            seam = _endpoint_metrics(bpy, armature, action, loop_start, loop_end)
             metrics["loop_seam"] = seam
+            tangents = _loop_tangent_metrics(action, loop_start, loop_end)
+            metrics["loop_tangents"] = tangents
             if seam["location_difference"] > 0.0001:
                 errors.append("Loop endpoint location difference exceeds 0.0001")
             if seam["rotation_difference_degrees"] > 0.1:
                 errors.append("Loop endpoint rotation difference exceeds 0.1 degrees")
-    else:
-        warnings.append("Loop seam was not checked because no loop range was supplied")
+            if seam["scale_difference"] > 0.0001:
+                errors.append("Loop endpoint scale difference exceeds 0.0001")
+            if seam["animated_bones_missing_from_armature"]:
+                errors.append("One or more pose-bone curves target bones missing from the armature")
+            tangent_errors, tangent_warnings = _loop_tangent_findings(tangents, audit_stage)
+            errors.extend(tangent_errors)
+            warnings.extend(tangent_warnings)
+        elif loop_required:
+            errors.append("Loop seam verification is required but no loop range was supplied")
+        else:
+            warnings.append("Loop seam was not checked because no loop range was supplied")
 
-    if contact_intervals:
-        drift, drift_errors = _contact_drift(bpy, armature, contact_intervals)
-        metrics["contact_drift"] = drift
-        errors.extend(drift_errors)
-        for bone_name, intervals in drift.items():
-            for interval in intervals:
-                if interval["max_drift"] > 0.02:
-                    errors.append(
-                        f"{bone_name} drift exceeds 0.02 during frames {interval['start']}-{interval['end']}"
-                    )
-    else:
-        warnings.append("Foot/contact drift was not checked because no contact intervals were supplied")
+        if contact_intervals:
+            if scene_units_per_stud is None:
+                errors.append(
+                    "Contact drift verification requires scene_units_per_stud for this rig; calibrate it "
+                    "from a known Studio measurement or the verified import scale"
+                )
+            else:
+                drift, drift_errors = _contact_drift(
+                    bpy,
+                    armature,
+                    contact_intervals,
+                    scene_units_per_stud,
+                )
+                metrics["contact_drift"] = drift
+                errors.extend(drift_errors)
+                for bone_name, intervals in drift.items():
+                    for interval in intervals:
+                        if interval["max_drift_studs"] > contact_drift_threshold:
+                            errors.append(
+                                f"{bone_name} drift exceeds {contact_drift_threshold:g} studs during frames "
+                                f"{interval['start']}-{interval['end']}"
+                            )
+        elif contacts_required:
+            errors.append("Contact drift verification is required but no contact intervals were supplied")
+        else:
+            warnings.append("Foot/contact drift was not checked because no contact intervals were supplied")
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        errors.append(f"Action sampling failed: {exc}")
+    finally:
+        armature.animation_data.action = previous_action
+        for track, mute in nla_states:
+            track.mute = mute
+        if created_animation_data:
+            armature.animation_data_clear()
 
     return {
         "ok": not errors,
@@ -937,8 +1443,10 @@ def transfer_action_by_bone_name(
             metrics={"target_authenticity": target_authenticity},
         )
 
-    source_action = bpy.data.actions.get(source_action_name) if source_action_name else None
-    if source_action is None and source.animation_data:
+    source_action = bpy.data.actions.get(source_action_name) if source_action_name is not None else None
+    if source_action_name is not None and source_action is None:
+        return _error(f"Action not found: {source_action_name}", armature=source.name)
+    if source_action_name is None and source_action is None and source.animation_data:
         source_action = source.animation_data.action
     if source_action is None:
         return _error("Source armature has no action to transfer", armature=source.name)
@@ -949,32 +1457,55 @@ def transfer_action_by_bone_name(
     if frame_end < frame_start:
         return _error("Transfer requires frame_start <= frame_end", armature=source.name)
 
-    target_action = _ensure_action(
-        bpy,
-        target,
-        target_action_name or f"{source_action.name}_RobloxTarget",
-    )
-    if source.animation_data is None:
-        source.animation_data_create()
-    previous_source_action = source.animation_data.action
-    previous_frame = int(bpy.context.scene.frame_current)
-    source.animation_data.action = source_action
-    target.animation_data.action = target_action
-
     common_bones = sorted(
         name
         for name in set(source.pose.bones.keys()) & set(target.pose.bones.keys())
         if target.data.bones[name].use_deform or "is_transformable" in target.data.bones[name]
     )
     if not common_bones:
-        source.animation_data.action = previous_source_action
         return _error("Source and target have no matching transformable bones", armature=target.name)
 
     constrained = sorted(
         name for name in common_bones if any(not constraint.mute for constraint in target.pose.bones[name].constraints)
     )
+    if constrained:
+        return _error(
+            f"Target transformable bones have active constraints: {', '.join(constrained)}",
+            armature=target.name,
+        )
+
+    resolved_target_name = target_action_name or f"{source_action.name}_RobloxTarget"
+    if bpy.data.actions.get(resolved_target_name) is not None:
+        return _error(
+            f"Target action already exists; choose a new action name: {resolved_target_name}",
+            armature=target.name,
+        )
+    created_source_animation_data = source.animation_data is None
+    if created_source_animation_data:
+        source.animation_data_create()
+    created_target_animation_data = target.animation_data is None
+    if created_target_animation_data:
+        target.animation_data_create()
+    previous_source_action = source.animation_data.action
+    previous_target_action = target.animation_data.action
+    source_nla_states = [(track, track.mute) for track in source.animation_data.nla_tracks]
+    previous_frame = int(bpy.context.scene.frame_current)
+    previous_active = bpy.context.view_layer.objects.active
+    previous_active_mode = previous_active.mode if previous_active is not None else None
+    previous_selected = list(bpy.context.selected_objects)
+    target_pose_state = {
+        name: (target.pose.bones[name].matrix_basis.copy(), target.pose.bones[name].rotation_mode)
+        for name in common_bones
+    }
+    target_action = bpy.data.actions.new(resolved_target_name)
+    source.animation_data.action = source_action
+    target.animation_data.action = target_action
+
     keyed = 0
+    transfer_error = None
     try:
+        for track, _mute in source_nla_states:
+            track.mute = True
         _activate_pose_mode(bpy, target)
         depsgraph = bpy.context.evaluated_depsgraph_get()
         for frame in range(int(frame_start), int(frame_end) + 1):
@@ -993,15 +1524,43 @@ def transfer_action_by_bone_name(
                 pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame, group=bone_name)
                 pose_bone.keyframe_insert(data_path="scale", frame=frame, group=bone_name)
                 keyed += 9
-        bpy.context.scene.frame_set(previous_frame)
-        bpy.context.view_layer.update()
     except Exception as exc:
-        return _error(f"Action transfer failed: {exc}", armature=target.name)
+        transfer_error = str(exc)
     finally:
         source.animation_data.action = previous_source_action
+        for track, mute in source_nla_states:
+            track.mute = mute
+        if created_source_animation_data:
+            source.animation_data_clear()
+        bpy.context.scene.frame_set(previous_frame)
+        bpy.context.view_layer.update()
+
+    if transfer_error is not None:
+        target.animation_data.action = previous_target_action
+        bpy.data.actions.remove(target_action)
+        for name, (matrix_basis, rotation_mode) in target_pose_state.items():
+            target.pose.bones[name].rotation_mode = rotation_mode
+            target.pose.bones[name].matrix_basis = matrix_basis
+        if created_target_animation_data:
+            target.animation_data_clear()
+        if bpy.context.object and bpy.context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in previous_selected:
+            if obj.name in bpy.context.scene.objects:
+                obj.select_set(True)
+        if previous_active and previous_active.name in bpy.context.scene.objects:
+            bpy.context.view_layer.objects.active = previous_active
+            if previous_active_mode and previous_active_mode != "OBJECT":
+                previous_active.select_set(True)
+                try:
+                    bpy.ops.object.mode_set(mode=previous_active_mode)
+                except RuntimeError:
+                    pass
+        return _error(f"Action transfer failed: {transfer_error}", armature=target.name)
 
     return {
-        "ok": not constrained,
+        "ok": True,
         "rig_type": detect_rig_type(target.data.bones.keys()),
         "armature": target.name,
         "bones": {},
@@ -1018,7 +1577,7 @@ def transfer_action_by_bone_name(
         },
         "artifacts": {},
         "warnings": [],
-        "errors": [f"Target transformable bones have active constraints: {', '.join(constrained)}"] if constrained else [],
+        "errors": [],
     }
 
 
@@ -1026,6 +1585,8 @@ def export_fbx(
     output_path: str | Path,
     armature_name: str | None = None,
     action_name: str | None = None,
+    frame_start: int | None = None,
+    frame_end: int | None = None,
 ) -> dict[str, Any]:
     """Export one skinned action to FBX; Motor6D rigs must use .rbxanim."""
     bpy, _Vector = _require_blender()
@@ -1049,18 +1610,42 @@ def export_fbx(
             armature=armature.name,
             metrics={"authenticity": authenticity},
         )
-    action = bpy.data.actions.get(action_name) if action_name else None
-    if action is None and armature.animation_data:
+    action = bpy.data.actions.get(action_name) if action_name is not None else None
+    if action_name is not None and action is None:
+        return _error(f"Action not found: {action_name}", armature=armature.name)
+    if action_name is None and action is None and armature.animation_data:
         action = armature.animation_data.action
     if action is None:
         return _error("No active action is available to export", armature=armature.name)
+    action_start = int(round(action.frame_range[0])) if frame_start is None else int(frame_start)
+    action_end = int(round(action.frame_range[1])) if frame_end is None else int(frame_end)
+    if action_end < action_start:
+        return _error("FBX export requires frame_start <= frame_end", armature=armature.name)
 
-    if armature.animation_data is None:
+    # Prove that an atomic export target can be created before changing any
+    # Blender animation, NLA, selection, mode, or frame-range state.
+    try:
+        temporary_handle = tempfile.NamedTemporaryFile(
+            prefix=f".{output.stem}-",
+            suffix=".fbx",
+            dir=output.parent,
+            delete=False,
+        )
+    except OSError as exc:
+        return _error(f"Unable to create temporary FBX export: {exc}", armature=armature.name)
+    temporary_handle.close()
+    temporary_output = Path(temporary_handle.name)
+
+    created_export_animation_data = armature.animation_data is None
+    if created_export_animation_data:
         armature.animation_data_create()
     previous_action = armature.animation_data.action
     previous_active = bpy.context.view_layer.objects.active
+    previous_active_mode = previous_active.mode if previous_active is not None else None
     previous_selected = list(bpy.context.selected_objects)
-    previous_mode = armature.mode
+    previous_frame = int(bpy.context.scene.frame_current)
+    previous_frame_start = int(bpy.context.scene.frame_start)
+    previous_frame_end = int(bpy.context.scene.frame_end)
     nla_states = []
     if armature.animation_data:
         for track in armature.animation_data.nla_tracks:
@@ -1078,9 +1663,11 @@ def export_fbx(
             mesh.select_set(True)
         bpy.context.view_layer.objects.active = armature
         armature.animation_data.action = action
+        bpy.context.scene.frame_start = action_start
+        bpy.context.scene.frame_end = action_end
 
         requested = {
-            "filepath": str(output),
+            "filepath": str(temporary_output),
             "check_existing": False,
             "use_selection": True,
             "object_types": {"ARMATURE", "MESH"},
@@ -1108,23 +1695,34 @@ def export_fbx(
         result = bpy.ops.export_scene.fbx(**kwargs)
         if "FINISHED" not in result:
             raise RuntimeError(f"FBX exporter returned {sorted(result)}")
+        if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
+            raise RuntimeError("FBX exporter finished without creating a non-empty file")
+        temporary_output.replace(output)
     except Exception as exc:
         errors.append(f"FBX export failed: {exc}")
     finally:
+        temporary_output.unlink(missing_ok=True)
         armature.animation_data.action = previous_action
         for track, mute in nla_states:
             track.mute = mute
+        if created_export_animation_data:
+            armature.animation_data_clear()
         bpy.ops.object.select_all(action="DESELECT")
         for obj in previous_selected:
             if obj.name in bpy.context.scene.objects:
                 obj.select_set(True)
         if previous_active and previous_active.name in bpy.context.scene.objects:
             bpy.context.view_layer.objects.active = previous_active
-        if previous_mode == "POSE" and armature.name in bpy.context.scene.objects:
-            _activate_pose_mode(bpy, armature)
+            if previous_active_mode and previous_active_mode != "OBJECT":
+                previous_active.select_set(True)
+                try:
+                    bpy.ops.object.mode_set(mode=previous_active_mode)
+                except RuntimeError:
+                    warnings.append(f"Could not restore prior object mode: {previous_active_mode}")
+        bpy.context.scene.frame_start = previous_frame_start
+        bpy.context.scene.frame_end = previous_frame_end
+        bpy.context.scene.frame_set(previous_frame)
 
-    if not errors and (not output.is_file() or output.stat().st_size == 0):
-        errors.append("FBX exporter finished without creating a non-empty file")
     return {
         "ok": not errors,
         "rig_type": detect_rig_type(armature.data.bones.keys()),
@@ -1132,8 +1730,8 @@ def export_fbx(
         "bones": {},
         "metrics": {
             "action": action.name,
-            "frame_start": int(bpy.context.scene.frame_start),
-            "frame_end": int(bpy.context.scene.frame_end),
+            "frame_start": action_start,
+            "frame_end": action_end,
             "deform_only": True,
             "bake_step": 1.0,
             "authenticity": authenticity,
@@ -1152,6 +1750,7 @@ OPERATIONS = {
         payload["output_directory"],
         payload.get("pose_label", "pose"),
         payload.get("frame"),
+        payload.get("front_direction"),
     ),
     "render-preview": lambda payload: render_animation_preview_frames(
         payload.get("armature"),
@@ -1172,6 +1771,11 @@ OPERATIONS = {
         payload.get("loop_start"),
         payload.get("loop_end"),
         payload.get("contact_intervals"),
+        payload.get("contact_drift_threshold", 0.02),
+        payload.get("scene_units_per_stud"),
+        payload.get("loop_required"),
+        payload.get("contacts_required"),
+        payload.get("audit_stage", "FINAL"),
     ),
     "transfer": lambda payload: transfer_action_by_bone_name(
         payload["source_armature"],
@@ -1185,8 +1789,16 @@ OPERATIONS = {
         payload["output_path"],
         payload.get("armature"),
         payload.get("action"),
+        payload.get("frame_start"),
+        payload.get("frame_end"),
     ),
-    "export-rbxanim": lambda payload: export_rbxanim(payload["output_path"], payload["armature"]),
+    "export-rbxanim": lambda payload: export_rbxanim(
+        payload["output_path"],
+        payload["armature"],
+        payload.get("action"),
+        payload.get("frame_start"),
+        payload.get("frame_end"),
+    ),
 }
 
 
@@ -1201,11 +1813,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main() -> int:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else sys.argv[1:]
     args = _parse_args(argv)
-    if args.payload_file:
-        payload = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
-    else:
-        payload = json.loads(args.payload)
-    result = OPERATIONS[args.operation](payload)
+    try:
+        if args.payload_file:
+            payload = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
+        else:
+            payload = json.loads(args.payload)
+        if not isinstance(payload, dict):
+            raise ValueError("Operation payload must be a JSON object")
+        result = OPERATIONS[args.operation](payload)
+        if not isinstance(result, dict):
+            raise TypeError("Operation did not return a result mapping")
+    except (KeyError, OSError, OverflowError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        result = _error(f"Operation {args.operation} failed: {exc}")
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("ok") else 1
 

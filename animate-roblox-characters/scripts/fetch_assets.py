@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import ssl
 import sys
 import tempfile
@@ -27,6 +26,19 @@ ALLOWED_HOSTS = {
     "objects.githubusercontent.com",
     "prod.docsiteassets.roblox.com",
 }
+
+
+def _validate_download_url(url: str) -> urllib.parse.ParseResult:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
+        raise ValueError(f"Download URL is not allowlisted: {url}")
+    return parsed
+
+
+class _AllowlistedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        _validate_download_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def sha256_file(path: Path) -> str:
@@ -56,9 +68,7 @@ def _safe_target(root: Path, relative: str) -> Path:
 
 
 def _download(url: str, target: Path, expected_sha256: str, expected_size: int) -> dict[str, Any]:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS:
-        raise ValueError(f"Download host is not allowlisted: {url}")
+    _validate_download_url(url)
     if target.is_file():
         digest = sha256_file(target)
         if digest == expected_sha256 and target.stat().st_size == expected_size:
@@ -68,15 +78,30 @@ def _download(url: str, target: Path, expected_sha256: str, expected_size: int) 
     target.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "animate-roblox-characters/1.0"})
     context = ssl.create_default_context()
+    opener = urllib.request.build_opener(
+        _AllowlistedRedirectHandler(),
+        urllib.request.HTTPSHandler(context=context),
+    )
     fd, temporary_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
     os.close(fd)
     temporary = Path(temporary_name)
     try:
-        with urllib.request.urlopen(request, context=context, timeout=60) as response, temporary.open("wb") as output:
-            final_host = urllib.parse.urlparse(response.geturl()).hostname
-            if final_host not in ALLOWED_HOSTS:
-                raise RuntimeError(f"Download redirected to a non-allowlisted host: {final_host}")
-            shutil.copyfileobj(response, output)
+        with opener.open(request, timeout=60) as response, temporary.open("wb") as output:
+            _validate_download_url(response.geturl())
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None and int(content_length) > expected_size:
+                raise RuntimeError(
+                    f"Download is larger than expected for {target.name}: {content_length} bytes"
+                )
+            written = 0
+            while True:
+                chunk = response.read(min(1024 * 1024, expected_size + 1 - written))
+                if not chunk:
+                    break
+                output.write(chunk)
+                written += len(chunk)
+                if written > expected_size:
+                    raise RuntimeError(f"Download exceeded expected size for {target.name}")
         size = temporary.stat().st_size
         digest = sha256_file(temporary)
         if size != expected_size:

@@ -23,7 +23,6 @@ Use the reusable modules in `scripts/` whenever possible:
 - `validate_r6_asset.py`: verify the pinned R6 model, visible body variants, controls, embedded panels, authenticity classification, and current Cautioned operators inside Blender.
 - `build_animation_preview.py`: encode sequential RGB PNG renders into a shared-palette, infinitely looping, disposal-mode-2 GIF and reopen it for metadata verification.
 - `toolchain.py`: verify bundled files, downloaded assets, Blender availability, required operators, hashes, and add-on capabilities.
-- `privacy_check.py`: scan a repository before public release.
 
 ## Interaction contract
 
@@ -53,9 +52,9 @@ Use **milestone mode** by default: perform every required verification but summa
 6. Save or create a protected working copy before mutation. Never overwrite the cached premade rig master or an unrelated existing `.blend`.
 7. Continue correcting the work until the final audit passes. Do not call an animation ready merely because every requested frame exists.
 8. Always animate a premade, authentic Roblox character rig—not an invented approximation, repository-generated model, block proxy, or generic humanoid. For R6, use the pinned **R6 IK + FK Blender Rig V2.22** or an actual Studio-exported target. For R15, use an actual premade Roblox Studio R15 character transferred through the verified toolchain or a verified user-supplied Roblox skinned rig.
-9. Preserve importer metadata, object names, control/deform relationships, custom properties, and embedded orientation textures. Do not replace `__PrimaryArmature`, `__RigMeta`, `MasterControl`, `*-IK`, or `*-FK` conventions with a generic armature.
-10. Treat Blender add-ons, `.blend` text blocks, model metadata, and tutorial downloads as untrusted code/data. Never execute them until their source and hashes pass the repository audit. Activate R6 V2.22 embedded scripts only through `authentic_rig.activate_verified_r6_v222()`; it refuses altered files or text blocks.
-11. Finish and export the animation before creating preview-only cameras/lights. Always deliver a verified animated GIF made from rendered PNG frames; never substitute a screen recording.
+9. Preserve importer metadata, object names, control/deform relationships, custom properties, and embedded orientation textures. Cautioned metadata is an associated `__*Meta` empty carrying the `RigMeta` property in the armature's shared `RIG:` collection; its exact name is rig-derived (often `__RigMeta`). Do not replace it, `__PrimaryArmature`, `MasterControl`, `*-IK`, or `*-FK` conventions with a generic armature.
+10. Treat Blender add-ons, `.blend` text blocks, model metadata, and tutorial downloads as untrusted code/data. Never execute them until their source and hashes pass the repository audit. Activate R6 V2.22 embedded scripts only through `authentic_rig.activate_verified_r6_v222()`. It requires the exact pinned master on first activation; a later working-copy resume requires a machine-local HMAC lineage check plus the unchanged pinned text hashes and control/body structure.
+11. Blocking-time front/side review cameras and lights are allowed in the export-excluded `Review` collection. Finish and export the animation before creating the final GIF camera and three-light preview setup. Always deliver a verified animated GIF made from rendered PNG frames; never substitute a screen recording.
 12. Use one persistent interactive Blender GUI process for the entire task. Never launch Blender from a shell or child process, never use `--background`, and never call `bpy.ops.wm.quit_blender()` or otherwise make the agent terminate Blender. Execute Blender work only through the already-connected Blender MCP session. Render PNG frames in that same session, wait for rendering to return, and encode the GIF outside Blender afterward.
 
 ## Common AI mistakes — explicitly prevent
@@ -77,22 +76,24 @@ Use **milestone mode** by default: perform every required verification but summa
 
 Start every animation task here.
 
-1. Connect to an already-open interactive Blender GUI through Blender MCP. Run `session_guard.inspect_session()` before any file mutation and require `ok: true` plus `mode: persistent-gui`. Never start or stop Blender on the user's behalf. If Blender MCP is unavailable or the process is in background mode, stop and ask the user to open Blender/start its MCP connection; do not fall back to command-line Blender.
-2. Run the offline `toolchain.py` audit. Verify Blender 4.5+, the bundled Cautioned 2.6.3 add-on, the required premade-rig path, and a Blender MCP tool capable of arbitrary Python execution. If a required component is missing, obtain it through the pinned workflow before mutation.
-3. Inspect the current file and protect existing work. Create an incremented working copy before any destructive setup.
-4. Find all armatures. For each armature, list exact bone names, parent relationships, deform flags, current transforms, constraints, and animation actions.
+1. Connect to an already-open interactive Blender GUI through Blender MCP. Run `session_guard.inspect_session()` by an actual arbitrary-Python MCP call before any file mutation and require `ok: true` plus `mode: persistent-gui`. That successful MCP call is the evidence for `blender_mcp_available=True`; importing `bpy` alone is not. Never start or stop Blender on the user's behalf. If Blender MCP is unavailable or the process is in background mode, stop and ask the user to open Blender/start its MCP connection; do not fall back to command-line Blender.
+2. Run `toolchain.py --repository-only`. In the external Python environment that will encode the mandatory GIF, run `toolchain.py --audit-pillow`; require `ok: true` and record the exact reported version. Do not require Pillow inside Blender's Python. Then discover whether Roblox Studio MCP and Cautioned's Creator Store plugin are actually available for this task. Record only capabilities that were verified; do not infer availability from the requested workflow or from an installed package.
+3. Call `authentic_rig.enable_bundled_addon()` through Blender MCP. It must verify the pinned add-on SHA-256 before runtime-only registration. Confirm the import, rebuild, and export operators are present. Do this before the workflow-aware runtime audit so a fresh Blender session can become ready; keep OAuth, online asset access, auto-connect, and live sync disabled.
+4. Inspect the current file read-only. Find all armatures and, for each one, list exact bone names, parent relationships, deform flags, current transforms, constraints, and actions. Do not change the current file path yet.
 5. Identify the most likely animation armature. If several plausible armatures remain, ask which to use rather than guessing.
-6. Classify the rig as R6, R15, or custom from discovered names and hierarchy. Detect IK targets, pole controls, root controls, and constrained deform bones.
-7. Run `authentic_rig.inspect_authenticity()` on the candidate. Check for the observed external-control convention (`__PrimaryArmature`, `MasterControl`, `*-IK`, `*-FK`), Den_S/Cautioned metadata (`__RigMeta`, `is_transformable`, `transform`, `transform1`, `nicetransform`), or a verified Roblox-compatible skinned R15 hierarchy. Report the chosen control map and export workflow.
-8. Reject every repository-generated model, diagnostic proxy, incomplete replica, and unverified generic rig. Never continue merely because a scene contains blocks named like Roblox body parts. This skill has no generated-model fallback.
-9. If no authentic rig exists, prepare the correct premade rig automatically:
-   - **R6:** run `fetch_assets.py --component r6-ik-fk-v222`. This downloads the actual V2.22 `.blend` and matching Studio `.rbxm` directly from Aeresei's original DevForum attachments. Require SHA-256 `ff75c44b...edcdc8` for the `.blend` and `a85e1ce1...93444` for the `.rbxm`. Copy the verified `.blend` to a new working file; never edit the cached master. Open it with auto-execution disabled, then run `activate_verified_r6_v222()`. Use its `__PrimaryArmature`, `MasterControl`, visible labeled/colored body controls, IK/FK limbs, Rig Settings, Utilities, and Rig Texture workflow.
-   - **R15:** select or create Roblox Studio's premade R15 character with Studio's rig builder, then transfer that actual model using Cautioned's **Blender Animations (ultimate edition)** Creator Store plugin and the bundled 2.6.3 Blender add-on. Preserve `__RigMeta`, part names, textures, and joint mapping. A user-supplied authentic R15 Studio/FBX rig is also valid after verification. Roblox's skeleton-only R15 project template is reference material and is not a substitute for the visible character.
+6. Provisionally classify the candidate as R6, R15, or custom from discovered names and hierarchy. Detect IK targets, pole controls, root controls, and constrained deform bones.
+7. Protect existing work before executing rig scripts or changing animation data. Save an incremented backup/copy. A locally attested R6 copy retains the same random lineage identifier and HMAC, so the backup remains directly reopenable under its new filename on the same user account.
+8. If the candidate has the R6 V2.22 convention, call `activate_verified_r6_v222()` before `inspect_authenticity()`. It must prove either the exact master hash or the local working-copy HMAC. Save the file whenever the result reports `lineage_updated: true`, then run `inspect_authenticity()`. For other candidates, run `inspect_authenticity()` directly. Check the observed external-control convention (`__PrimaryArmature`, `MasterControl`, `*-IK`, `*-FK`), Den_S/Cautioned metadata (an associated `__*Meta` empty with `RigMeta`, plus `is_transformable`, `transform`, `transform1`, and `nicetransform`), or a verified Roblox-compatible skinned R15 hierarchy. Report the chosen control map and export workflow.
+9. After classification, run the runtime audit inside the persistent Blender MCP Python session; an ordinary shell call must fail because it is outside Blender. Verify Blender 4.5+, the already hash-verified Cautioned 2.6.3 operators, the required premade-rig path, arbitrary Blender Python execution, and the externally attested Pillow version. For the default R15 bootstrap, call `toolchain.full_audit(required_workflow="r15-bootstrap", blender_mcp_available=True, pillow_available=True, pillow_version="<exact externally audited version>", studio_mcp_available=True, creator_plugin_available=True)` only when every external capability was actually verified. Require the bundled add-on's `rbxanim_import`, `rbxanim_rebuild`, and `rbxanim_export` operators; any missing operator fails R15 readiness. Missing required capabilities must fail the audit. `r15-bootstrap` is the only named workflow gate in this version. For R6 or skinned-FBX paths, call `toolchain.full_audit(blender_mcp_available=True, pillow_available=True, pillow_version="<exact externally audited version>")` without a workflow selector, then explicitly verify the relevant asset and exporter: the pinned V2.22 hashes plus `rbxanim_export` for R6, or verified Studio provenance, an armature-deformed mesh, and `bpy.ops.export_scene.fbx` for skinned FBX.
+10. Reject every repository-generated model, diagnostic proxy, incomplete replica, and unverified generic rig. Never continue merely because a scene contains blocks named like Roblox body parts. This skill has no generated-model fallback.
+11. If no authentic rig exists, prepare the correct premade rig automatically:
+   - **R6:** run `fetch_assets.py --component r6-ik-fk-v222`. This downloads the actual V2.22 `.blend` and matching Studio `.rbxm` directly from Aeresei's original DevForum attachments. Require SHA-256 `ff75c44b...edcdc8` for the `.blend` and `a85e1ce1...93444` for the `.rbxm`. Copy the verified `.blend` to a new working file; never edit the cached master. Open it with auto-execution disabled, then run `activate_verified_r6_v222()`. First activation creates a machine-local lineage key and stores only a random lineage identifier plus its HMAC in the working `.blend`, allowing renamed backups and crash-safe resume without trusting a public custom property alone. Use the rig's `__PrimaryArmature`, `MasterControl`, visible labeled/colored body controls, IK/FK limbs, Rig Settings, Utilities, and Rig Texture workflow.
+   - **R15:** select or create Roblox Studio's premade R15 character with Studio's rig builder, then transfer that actual model using Cautioned's **Blender Animations (ultimate edition)** Creator Store plugin and the bundled 2.6.3 Blender add-on. Preserve the associated rig-named `__*Meta` empty carrying `RigMeta`, part names, textures, and joint mapping. For a skinned R15/FBX target, verify its Studio source and visible mesh before calling `mark_verified_skinned_rig()`; matching bone names alone never qualify. Roblox's skeleton-only R15 project template is reference material and is not a substitute for the visible character.
    - **Custom Roblox avatar:** export the actual selected Studio character through the same verified workflow. Keep its appearance rather than replacing it with a neutral model.
-10. Register the bundled `rbx_anims_v2.6.3.zip` only after its SHA-256 passes. Keep its optional OAuth, online asset access, auto-connect, and localhost live-sync server disabled during ordinary Blender authoring. Enable live sync only for an explicit Studio transfer/validation step and stop it immediately afterward.
-11. Perform all import, rig preparation, control mapping, appearance transfer, and setup work the available MCPs permit. Ask the user only for unavoidable external authorization such as a network download, plugin installation, local file dialog, or Roblox publishing permission. Never delegate rigging or animation work.
-12. If the required premade rig cannot be obtained or verified, stop before keyframing and report the exact blocker. Do not silently switch rig types or fabricate a replacement.
-13. Confirm Pose Mode on the selected authentic armature and report the inspection result before planning motion.
+12. Enable live sync only for an explicit Studio transfer/validation step and stop it immediately afterward.
+13. Perform all import, rig preparation, control mapping, appearance transfer, and setup work the available MCPs permit. Ask the user only for unavoidable external authorization such as a network download, plugin installation, local file dialog, or Roblox publishing permission. Never delegate rigging or animation work.
+14. If the required premade rig cannot be obtained or verified, stop before keyframing and report the exact blocker. Do not silently switch rig types or fabricate a replacement.
+15. Confirm Pose Mode on the selected authentic armature and report the inspection result before planning motion.
 
 ### Phase 1 — Animation planning
 
@@ -107,7 +108,9 @@ Convert the request into a concise brief containing:
 - Reference/style notes.
 - Output location and action name.
 
-Propose strong defaults for missing details. Present the plan and obtain one confirmation. Do not ask the user to invent key poses or technical settings.
+For loops, distinguish playback frames from the duplicated seam-check key. A “24-frame loop” normally plays frames `1–24`, keys a duplicate of frame 1 at frame `25` for seam/tangent auditing, and excludes frame 25 from the GIF.
+
+Propose strong defaults for missing details. Treat this brief as provisional and continue directly to Phase 2 without asking for confirmation yet. Do not ask the user to invent key poses or technical settings.
 
 ### Phase 2 — Key-pose planning
 
@@ -122,6 +125,8 @@ For every major pose, specify:
 - Head direction and secondary motion.
 - Intended front-view and side-view read.
 
+Present the provisional Phase 1 brief and the complete Phase 2 key-pose concept together, then obtain the interaction contract's single confirmation before inserting any keyframes. After that confirmation, continue autonomously through Phases 3–7 unless an unavoidable external authorization is required.
+
 ### Phase 3 — Blocking
 
 Create poses one at a time or in small coherent batches through Blender Python. Use this order within a pose:
@@ -131,9 +136,11 @@ Create poses one at a time or in small coherent batches through Blender Python. 
 3. Arms.
 4. Head and secondary controls.
 
-Key only pose bones and only the channels that need animation. Use discovered names, never guessed names. Set blocking keys to constant interpolation.
+Key only pose bones and only the channels that need animation. Use discovered names, never guessed names. Preserve each Euler bone's configured rotation order; use normalized WXYZ `rotation_quaternion` values for quaternion controls. Validate the entire pose payload before any key insertion. Establish the visible model's forward direction during Phase 0 and pass it to every non-R6 front/side review. Set blocking keys to constant interpolation.
 
 After every insertion or batch, execute the full verification loop from the core rules. In milestone mode, keep the returned code and transform details available but summarize them. In debug mode, expose them in full.
+
+At the end of blocking, call `audit_action(audit_stage="BLOCKING", loop_required=IS_LOOP, contacts_required=HAS_SUPPORT_CONTACTS, ...)`. Replace the placeholders with booleans from the confirmed plan. Supply `loop_start`/`loop_end` whenever `IS_LOOP` is true, and supply the declared `contact_intervals` plus calibrated `scene_units_per_stud` whenever `HAS_SUPPORT_CONTACTS` is true. Constant keys are intentional at this stage and must not be treated as a final-interpolation failure. Loop endpoint pose equality and explicit endpoint keys remain required, while a tangent mismatch is informational until Phase 4 creates the final Bezier handles. Every other applicable hierarchy, mesh-keying, pose, contact, and review check still applies. Never use the abbreviated call without its workflow-specific arguments.
 
 ### Phase 4 — Graph Editor polish
 
@@ -145,6 +152,8 @@ After blocking is approved by the internal pose checks:
 4. Offset secondary channels where appropriate so the torso, head, arms, and hands do not start and stop simultaneously.
 5. Preserve planted foot world positions through contact intervals.
 6. Re-render and review representative in-betweens, not only key poses.
+
+After conversion and polish, use `audit_action(audit_stage="FINAL", loop_required=IS_LOOP, contacts_required=HAS_SUPPORT_CONTACTS, ...)` with the same required loop range, declared contact intervals, and calibrated scene scale used by the workflow. Both booleans are mandatory even when false; the literal abbreviated call `audit_action(audit_stage="FINAL")` is invalid. Never use blocking mode to approve an export.
 
 ### Phase 5 — Polish and secondary motion
 
@@ -165,15 +174,16 @@ If animation was authored on the verified premade R6 control rig for a different
 
 1. Play or sample the complete action repeatedly.
 2. For loops, compare the first and closing poses numerically, compare their curve tangents, and preview without holding the duplicated closing frame.
-3. Measure planted-foot world drift during declared contact intervals.
+3. Declare and measure every planted foot/hand interval. Pass `contacts_required=True` for locomotion and every grounded one-shot with intended support contacts, including attacks, anticipation, impacts, recoveries, and grounded emotes. Use `contacts_required=False` only when the complete action intentionally has no planted interval, and record that reason. For any imported rig whose scale is not already verified as one Blender scene unit per stud, calibrate `scene_units_per_stud` from a known Studio measurement or the verified import scale and pass it to `audit_action()`; never compare raw Blender distances directly with a stud threshold.
 4. Confirm that every final animation curve targets a pose bone and uses non-linear final interpolation.
 5. Check balance, silhouette, hierarchy, arcs, spacing, impact, secondary motion, and Roblox-style exaggeration against the common-mistake list.
 6. Fix every failed check and repeat the audit.
-7. Confirm the action is on an `authentic_ready: true` premade or Studio-derived Roblox target.
-8. Save the final `.blend` and choose the export format from the verified rig workflow:
-   - For metadata-backed Motor6D/part rigs, export the active action through the companion Blender add-on as `.rbxanim`; do not use generic FBX.
-   - For verified skinned/bone rigs, export exactly one active action to FBX with helper controls excluded and evaluated control motion baked onto deform bones.
-9. If Roblox Studio MCP and an imported or published animation are available, inspect the target rig, play the animation, capture the viewport, and check console output. Do not require Studio validation for Blender completion.
+7. In the final audit, explicitly pass both `loop_required` and `contacts_required`; omission is a failure rather than permission to skip a check.
+8. Confirm the action is on an `authentic_ready: true` premade or Studio-derived Roblox target.
+9. Save the final `.blend` and choose the export format from the verified rig workflow:
+   - For metadata-backed Motor6D/part rigs, export the explicitly named action and audited frame range through the companion Blender add-on as `.rbxanim`; do not use generic FBX.
+   - For verified skinned/bone rigs, export exactly one explicitly named action and audited frame range to FBX with helper controls excluded and evaluated control motion baked onto deform bones.
+10. If Roblox Studio MCP and an imported or published animation are available, inspect the target rig, play the animation, capture the viewport, and check console output. Do not require Studio validation for Blender completion.
 
 ### Phase 7 — Preview media
 
@@ -198,9 +208,11 @@ Use these minimum automated checks unless the rig scale or request clearly requi
 
 - No mesh-object animation curves.
 - No final `LINEAR` keyframe interpolation.
-- Maximum planted-foot drift: `0.02` scene units/studs.
+- Maximum planted-foot drift: `0.02` studs. For imported rigs, provide `scene_units_per_stud` to the action audit using a known Studio measurement or verified import scale; do not infer it from nominal rig type or character height.
+- Final audits explicitly declare whether loop and contact checks are required. Grounded actions with any intended support contact require contact intervals and `contacts_required=True`.
 - Loop endpoint location difference: at most `0.0001` scene units.
 - Loop endpoint rotation difference: at most `0.1` degrees.
+- Loop endpoint scale difference: at most `0.0001`, with endpoint tangent slope difference at most `0.001` value/frame.
 - Front and side review images for every major pose.
 - Toolchain audit identifies no missing bundled files and no silently skipped required operator.
 - Authenticity status is `authentic_ready: true`; repository-generated rigs and proxies never qualify.

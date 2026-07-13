@@ -41,7 +41,8 @@ def validate() -> dict:
         errors.append("Missing __PrimaryArmature")
     if internal is None or internal.type != "ARMATURE":
         errors.append("Missing InternalArmature")
-    control_names = set(armature.pose.bones.keys()) if armature else set()
+    valid_armature = armature is not None and armature.type == "ARMATURE"
+    control_names = set(armature.pose.bones.keys()) if valid_armature else set()
     object_names = set(bpy.data.objects.keys())
     missing_controls = sorted(REQUIRED_CONTROLS - control_names)
     missing_body = sorted(REQUIRED_BODY_OBJECTS - object_names)
@@ -52,7 +53,7 @@ def validate() -> dict:
     body_variants = sorted(name for name in object_names if name.endswith(("_F2012", "_F2016", "_FBlocky", "_M2012", "_M2016", "_MBlocky")))
     if len(body_variants) < 20:
         errors.append("Expected premade colored/labeled R6 body variants were not found")
-    authenticity = inspect_authenticity(armature) if armature else None
+    authenticity = inspect_authenticity(armature) if valid_armature else None
     if not authenticity or not authenticity["authentic_ready"]:
         errors.append("R6 asset did not classify as authentic-ready")
     rig_texture = bpy.data.images.get("R6rig1_diff.png")

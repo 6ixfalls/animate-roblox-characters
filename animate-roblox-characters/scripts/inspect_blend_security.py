@@ -10,6 +10,7 @@ text blocks.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -25,6 +26,105 @@ FILESYSTEM_RE = re.compile(r"\b(open|Path\s*\([^)]*\)\.(?:write|unlink)|shutil\.
 HOME_RE = re.compile(
     "(?:/" + "Users" + "/|/" + "home" + "/|[A-Za-z]:\\\\" + "Users" + "\\\\)"
 )
+
+
+def inspect_source_capabilities(source: str) -> dict[str, bool]:
+    """Find aliased imports/calls; parse failures remain suspicious."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {
+            "network": False,
+            "process": False,
+            "dynamic_code": False,
+            "filesystem": False,
+            "analysis_failed": True,
+        }
+
+    aliases: dict[str, str] = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def resolve(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id, node.id)
+        if isinstance(node, ast.Call):
+            return resolve(node.func)
+        if isinstance(node, ast.Attribute):
+            parent = resolve(node.value)
+            return f"{parent}.{node.attr}" if parent else None
+        return None
+
+    calls = {
+        name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and (name := resolve(node.func)) is not None
+    }
+    imports = set(aliases.values())
+    return {
+        "network": any(
+            name.startswith(("requests", "urllib", "socket", "http.client", "ftplib"))
+            for name in imports | calls
+        ),
+        "process": any(
+            name in {"os.system", "os.popen"}
+            or name.startswith(("subprocess", "multiprocessing", "pty"))
+            for name in imports | calls
+        ),
+        "dynamic_code": any(
+            name
+            in {
+                "eval",
+                "exec",
+                "compile",
+                "__import__",
+                "builtins.eval",
+                "builtins.exec",
+                "builtins.compile",
+                "builtins.__import__",
+            }
+            for name in calls
+        ),
+        "filesystem": any(
+            name in {"open", "builtins.open"}
+            or name.startswith(("shutil.", "pathlib.Path."))
+            or name
+            in {
+                "os.remove",
+                "os.open",
+                "os.unlink",
+                "os.rename",
+                "os.replace",
+                "os.mkdir",
+                "os.makedirs",
+                "os.chmod",
+                "os.rmdir",
+                "os.removedirs",
+                "Path.write_text",
+                "Path.write_bytes",
+                "Path.unlink",
+                "Path.rename",
+                "Path.replace",
+            }
+            or name.endswith(
+                (
+                    ".Path.write_text",
+                    ".Path.write_bytes",
+                    ".Path.unlink",
+                    ".Path.rename",
+                    ".Path.replace",
+                )
+            )
+            for name in calls
+        ),
+        "analysis_failed": False,
+    }
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -56,17 +156,19 @@ def inspect_text(text: Any, dump_directory: Path | None) -> dict[str, Any]:
             target = target.with_suffix(target.suffix + ".py")
         target.write_bytes(encoded)
         dumped = str(target)
+    ast_flags = inspect_source_capabilities(source)
     return {
         "name": text.name,
         "bytes": len(encoded),
         "sha256": sha256_bytes(encoded),
         "dumped_to": dumped,
         "flags": {
-            "network": bool(NETWORK_RE.search(source)),
-            "process": bool(PROCESS_RE.search(source)),
-            "dynamic_code": bool(DYNAMIC_RE.search(source)),
-            "filesystem": bool(FILESYSTEM_RE.search(source)),
+            "network": bool(NETWORK_RE.search(source)) or ast_flags["network"],
+            "process": bool(PROCESS_RE.search(source)) or ast_flags["process"],
+            "dynamic_code": bool(DYNAMIC_RE.search(source)) or ast_flags["dynamic_code"],
+            "filesystem": bool(FILESYSTEM_RE.search(source)) or ast_flags["filesystem"],
             "home_path": bool(HOME_RE.search(source)),
+            "analysis_failed": ast_flags["analysis_failed"],
         },
     }
 

@@ -10,6 +10,8 @@ Use exactly one persistent interactive Blender GUI process for the complete task
 
 Viewport screenshots are useful but optional. When no screenshot tool exists, use `animation_tools.render_pose_views()` to render deterministic front and side review images through Blender itself.
 
+Pose-review cameras/lights may be created during blocking only inside the export-excluded `Review` collection. The final GIF camera and three-light setup remain Phase 7 work after export.
+
 Do not enable Blender MCP asset-download features, API keys, or external model services. Use only the pinned `fetch_assets.py` path for the mandatory R6 asset. Bind Blender MCP to localhost, pin the manifest version, and disable all prompt, code, screenshot, and usage telemetry. Arbitrary Python execution is equivalent to local code execution with Blender's user privileges.
 
 ## Calling the bundled modules
@@ -50,7 +52,7 @@ Treat `ok: false`, non-empty `errors`, or a required `unverified` metric as a fa
 6. Run `apply_pose()` with a single pose or coherent body-group batch.
 7. Require the returned transforms and review renders before the next batch.
 8. Run `polish_curves()` only after blocking.
-9. Run `audit_action()` after blocking, after polish, and immediately before export.
+9. Run `audit_action(audit_stage="BLOCKING")` after blocking so intentional constant keys are permitted while hierarchy, mesh-keying, and other supplied checks still run. After polish and immediately before export, run `audit_action(audit_stage="FINAL", loop_required=..., contacts_required=...)`; final mode requires both booleans explicitly and rejects every constant or linear key.
 10. Retarget only between two verified authentic Roblox rigs, then visually verify the target.
 11. Save the working `.blend`, then use `export_rbxanim()` for Motor6D rigs or `export_fbx()` for verified skinned rigs.
 
@@ -68,14 +70,16 @@ Do not send a long monolithic script that creates the whole animation without ch
     "bones": {
         "LowerTorso": {"rotation_degrees": [0, 0, -5]},
         "LeftUpperLeg": {"rotation_degrees": [18, 0, 0]},
-        "CTRL_LeftFoot_IK": {"location": [0, 0, 0]}
+        "CTRL_LeftFoot_IK": {"location": [0, 0, 0]},
+        "QuaternionControl": {"rotation_quaternion": [1, 0, 0, 0]}
     },
     "render_directory": OUTPUT_REVIEW_DIRECTORY,
-    "pose_label": "contact-left"
+    "pose_label": "contact-left",
+    "review_front_direction": [0, -1, 0]
 }
 ```
 
-Locations are local pose-bone offsets. Rotations are Euler degrees in the bone's configured rotation order. Never include a name that was not returned by inspection.
+Locations are local pose-bone offsets. Euler rotations use the bone's configured rotation order unless an explicit valid Euler `rotation_mode` is supplied. Quaternion rotations use normalized WXYZ order. Never include a name that was not returned by inspection. R6 V2.22 defaults to visible forward `+Y`; every other rig requires `review_front_direction` established from visual inspection.
 
 ## Visual critique requirements
 
@@ -88,7 +92,7 @@ If image inspection and numerical transforms disagree, trust the evaluated image
 
 ## Existing rigs
 
-Never rename an existing user's bones merely to match a template. Build a role map from discovered names and hierarchy. Preserve `__PrimaryArmature`, `__RigMeta`, importer custom properties, orientation textures, and control shapes. If constraints exist, key controls; if a verified FK rig has no controls, key the deform pose bones directly. Never generate or substitute a character model.
+Never rename an existing user's bones merely to match a template. Build a role map from discovered names and hierarchy. Preserve `__PrimaryArmature`, the associated rig-named `__*Meta` empty carrying `RigMeta` in the shared `RIG:` collection, importer custom properties, orientation textures, and control shapes. If constraints exist, key controls; if a verified FK rig has no controls, key the deform pose bones directly. Never generate or substitute a character model.
 
 ## Failures
 

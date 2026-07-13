@@ -86,14 +86,18 @@ def _preserve_frame_boundaries(gif_frames) -> None:
     if not gif_frames:
         return
     marker = (0, 0)
-    first_palette = gif_frames[0].getpalette()
-    marker_index = int(gif_frames[0].getpixel(marker))
-    marker_rgb = first_palette[marker_index * 3 : marker_index * 3 + 3]
-    shared_palette = list(first_palette)
-    shared_palette[254 * 3 : 254 * 3 + 3] = marker_rgb
-    shared_palette[255 * 3 : 255 * 3 + 3] = marker_rgb
     for index, frame in enumerate(gif_frames):
-        frame.putpalette(shared_palette)
+        frame_palette = frame.getpalette()
+        if frame_palette is None:
+            raise ValueError("GIF frame does not have an indexed palette")
+        marker_index = int(frame.getpixel(marker))
+        marker_rgb = frame_palette[marker_index * 3 : marker_index * 3 + 3]
+        padded_palette = list(frame_palette)
+        if len(padded_palette) < 768:
+            padded_palette.extend([0] * (768 - len(padded_palette)))
+        padded_palette[254 * 3 : 254 * 3 + 3] = marker_rgb
+        padded_palette[255 * 3 : 255 * 3 + 3] = marker_rgb
+        frame.putpalette(padded_palette)
         frame.putpixel(marker, 254 + (index % 2))
 
 
