@@ -1,6 +1,9 @@
 # Animate Roblox Characters Skill
 
-[![Validate](https://github.com/dillydog580/animate-roblox-characters/actions/workflows/validate.yml/badge.svg)](https://github.com/dillydog580/animate-roblox-characters/actions/workflows/validate.yml)
+[![CI](https://github.com/dillydog580/animate-roblox-characters/actions/workflows/validate.yml/badge.svg?branch=main)](https://github.com/dillydog580/animate-roblox-characters/actions/workflows/validate.yml)
+[![Release](https://img.shields.io/github/v/release/dillydog580/animate-roblox-characters?display_name=tag&sort=semver&label=release)](https://github.com/dillydog580/animate-roblox-characters/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/dillydog580/animate-roblox-characters)](LICENSE)
+[![Agent Skill](https://img.shields.io/badge/Agent%20Skill-Codex%20%7C%20Claude%20Code-6f42c1)](https://skills.sh/dillydog580/animate-roblox-characters/animate-roblox-characters)
 
 `animate-roblox-characters` is an open-source Codex and Claude Code skill for creating complete stylized Roblox R6 and R15 character animations in Blender. It operates on an authentic premade or Studio-derived Roblox rig, handles bone/control inspection, pose planning, keyframing, Graph Editor polish, foot-lock and loop checks, source-appropriate export, a rendered animated GIF preview, and optional Roblox Studio validation.
 
@@ -33,6 +36,16 @@ For classic Motor6D R6/R15 rigs, use Cautioned's [Blender Animations (ultimate e
 The colored, labeled R6 control-rig interface seen in the referenced tutorials is [R6 IK + FK Blender Rig V2.22](https://devforum.roblox.com/t/r6-ik-fk-blender-rig-v222/3586405). It is mandatory for generic R6 authoring. The skill downloads the actual `.blend` and matching `.rbxm` directly from the author's attachments and verifies pinned hashes. Because the author did not state a redistribution license, Git does not mirror the source rig binaries.
 
 Compatible Blender MCPs commonly expose tools named `execute_blender_code` or `blender_python_exec`. The skill discovers capabilities and is not tied to one MCP implementation or tool name.
+
+## Quick install
+
+Install through the cross-agent [Skills CLI](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add dillydog580/animate-roblox-characters
+```
+
+The installer discovers `animate-roblox-characters` and lets you choose Codex, Claude Code, or another compatible agent. The manual platform-specific methods below remain available.
 
 ## Install for Codex
 

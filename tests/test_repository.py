@@ -119,6 +119,10 @@ class SkillStructureTests(unittest.TestCase):
         self.assertIn("interactive Blender GUI", text)
         self.assertIn("GPT-5.6 Sol using extra-high reasoning", text)
         self.assertIn('$HOME/.agents/skills', text)
+        self.assertIn("img.shields.io/github/v/release/dillydog580/animate-roblox-characters", text)
+        self.assertIn("img.shields.io/github/license/dillydog580/animate-roblox-characters", text)
+        self.assertIn("skills.sh/dillydog580/animate-roblox-characters/animate-roblox-characters", text)
+        self.assertIn("npx skills add dillydog580/animate-roblox-characters", text)
         self.assertNotIn("## Privacy", text)
         self.assertTrue((ROOT / "docs" / "stylized-r6-walk-preview.gif").is_file())
 
@@ -131,7 +135,9 @@ class SkillStructureTests(unittest.TestCase):
     def test_ci_installs_pinned_test_dependency(self):
         workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
         requirements = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+        self.assertIn("name: CI", workflow)
         self.assertIn("pip install --requirement requirements-dev.txt", workflow)
+        self.assertIn("cache-dependency-path: requirements-dev.txt", workflow)
         self.assertIn("Pillow==12.3.0", requirements)
 
     def test_generated_outputs_and_crash_reports_are_ignored(self):
