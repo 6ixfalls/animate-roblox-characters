@@ -34,6 +34,9 @@ def main() -> int:
         3,
         "r6-motion",
         False,
+        camera_location=(6.8, 8.8, 4.8),
+        look_target=(0, 0, 2.55),
+        ortho_scale=6.4,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["ok"] else 1

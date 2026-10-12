@@ -41,31 +41,6 @@ class SkillStructureTests(unittest.TestCase):
         self.assertEqual(keys, ["name", "description"])
         self.assertIn("name: animate-roblox-characters", frontmatter)
 
-    def test_canonical_protocol_and_premade_rule_are_explicit(self):
-        text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        required = [
-            "Work only in Pose Mode",
-            "Discover and report the exact armature and bone names",
-            "Linear interpolation is forbidden",
-            "Foot sliding",
-            "Phase 0 — Inspection and automatic setup",
-            "Phase 1 — Animation planning",
-            "Phase 2 — Key-pose planning",
-            "Phase 3 — Blocking",
-            "Phase 4 — Graph Editor polish",
-            "Phase 5 — Polish and secondary motion",
-            "Phase 6 — Loop test and final review",
-            "Phase 7 — Preview media",
-            "R6 IK + FK Blender Rig V2.22",
-            "Blender Animations (ultimate edition)",
-            "This skill has no generated-model fallback",
-            "visible labeled/colored body controls",
-            "Always deliver a verified animated GIF",
-            ".rbxanim",
-        ]
-        for phrase in required:
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, text)
 
     def test_single_confirmation_follows_plan_and_key_pose_concept(self):
         text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -77,33 +52,6 @@ class SkillStructureTests(unittest.TestCase):
         self.assertNotIn("obtain one confirmation", phase_1)
         self.assertIn("single confirmation before inserting any keyframes", phase_2)
 
-    def test_r15_bootstrap_and_scale_calibration_are_documented(self):
-        skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        rig_text = (SKILL / "references" / "roblox-rigs-export.md").read_text(encoding="utf-8")
-        toolchain_text = (SKILL / "references" / "toolchain.md").read_text(encoding="utf-8")
-        self.assertIn('required_workflow="r15-bootstrap"', skill_text)
-        self.assertNotIn("toolchain.py --workflow", skill_text)
-        for phrase in (
-            "temporary live-sync transfer",
-            "authentic_rig.import_motor6d_obj(path)",
-            "mark_verified_skinned_rig(armature_name, source)",
-            "Never delegate animation work to the user",
-            "scene_units_per_stud = blender_scene_distance / studio_distance_studs",
-            "scene_units_per_stud=scene_units_per_stud",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, rig_text)
-        self.assertIn("the sole runtime-readiness procedure", toolchain_text)
-        self.assertIn("blender_mcp_available=True", toolchain_text)
-        self.assertIn("pillow_available=True", toolchain_text)
-        self.assertLess(
-            skill_text.index("authentic_rig.enable_bundled_addon()"),
-            skill_text.index('toolchain.full_audit(required_workflow="r15-bootstrap"'),
-        )
-        self.assertLess(
-            rig_text.index("Hash-verify and register the bundled Cautioned"),
-            rig_text.index("workflow-aware toolchain audit for `r15-bootstrap`"),
-        )
 
     def test_agent_metadata_matches_skill(self):
         text = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
@@ -126,11 +74,6 @@ class SkillStructureTests(unittest.TestCase):
         self.assertNotIn("## Privacy", text)
         self.assertTrue((ROOT / "docs" / "stylized-r6-walk-preview.gif").is_file())
 
-    def test_installable_skill_contains_license_and_notices(self):
-        self.assertEqual((SKILL / "LICENSE").read_bytes(), (ROOT / "LICENSE").read_bytes())
-        notices = (SKILL / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
-        self.assertIn("R6 IK + FK Blender Rig V2.22", notices)
-        self.assertIn("218b5e43e414fe3fa5d8a42cc5fd162b70e66f4cb82efd73ac5006b63895769a", notices)
 
     def test_ci_installs_pinned_test_dependency(self):
         workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
@@ -157,16 +100,11 @@ class SkillStructureTests(unittest.TestCase):
         ]
         self.assertTrue(all(not path.exists() for path in forbidden))
 
-    def test_rbxanim_export_targets_the_bundled_addon_setting(self):
-        source = (SCRIPTS / "authentic_rig.py").read_text(encoding="utf-8")
+    def test_rbxanim_export_targets_the_installed_addon_setting(self):
+        source = (SCRIPTS / "rig_tools.py").read_text(encoding="utf-8")
         self.assertIn('settings.rbx_anim_armature = armature.name', source)
         self.assertNotIn('bpy.context.scene.rbx_anim_armature = armature.name', source)
 
-    def test_bundled_current_addon_and_license(self):
-        addon = SKILL / "assets" / "blender-addons" / "rbx_anims_v2.6.3.zip"
-        license_file = SKILL / "assets" / "blender-addons" / "Cautioned-Blender-Animations-Plugin-LICENSE.txt"
-        self.assertEqual(sha256(addon), "218b5e43e414fe3fa5d8a42cc5fd162b70e66f4cb82efd73ac5006b63895769a")
-        self.assertIn("GNU GENERAL PUBLIC LICENSE", license_file.read_text(encoding="utf-8"))
 
 
 class PurePythonScriptTests(unittest.TestCase):
@@ -174,12 +112,90 @@ class PurePythonScriptTests(unittest.TestCase):
     def setUpClass(cls):
         cls.animation_tools = load_module("animation_tools_test", SCRIPTS / "animation_tools.py")
         cls.preview = load_module("animation_preview_test", SCRIPTS / "build_animation_preview.py")
-        cls.authentic_rig = load_module("authentic_rig_test", SCRIPTS / "authentic_rig.py")
-        cls.fetch_assets = load_module("fetch_assets_test", SCRIPTS / "fetch_assets.py")
+        cls.rig_tools = load_module("rig_tools_test", SCRIPTS / "rig_tools.py")
         cls.toolchain = load_module("toolchain_test", SCRIPTS / "toolchain.py")
         cls.privacy = load_module("privacy_check_test", SCRIPTS / "privacy_check.py")
         cls.session_guard = load_module("session_guard_test", SCRIPTS / "session_guard.py")
         cls.blend_security = load_module("inspect_blend_security_test", SCRIPTS / "inspect_blend_security.py")
+
+    def test_installed_rigs_do_not_require_provenance_or_activation(self):
+        control = self.rig_tools.classify_snapshot(
+            armature_name="__PrimaryArmature", bone_names=["MasterControl", "LeftLeg-IK"]
+        )
+        self.assertTrue(control["rig_ready"])
+        self.assertEqual(control["workflow"], "motor6d-rbxanim")
+        skinned = self.rig_tools.classify_snapshot(
+            armature_name="CustomAvatar", bone_names=["Root", "Spine"],
+            has_armature_deformed_mesh=True,
+        )
+        self.assertTrue(skinned["rig_ready"])
+        self.assertEqual(skinned["workflow"], "skinned-fbx")
+        self.assertFalse(self.rig_tools._operator_available(None))
+
+    def test_missing_manual_import_plugin_returns_prerequisite(self):
+        fake_bpy = SimpleNamespace(ops=SimpleNamespace(object=SimpleNamespace()))
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "character.obj"
+            source.write_text("# supplied model\n")
+            with mock.patch.dict(sys.modules, {"bpy": fake_bpy}):
+                result = self.rig_tools.import_motor6d_obj(source)
+        self.assertFalse(result["ok"])
+        self.assertIn("add-on is unavailable", result["errors"][0])
+
+    def test_partial_importer_properties_preserve_skinned_workflow(self):
+        properties = sorted(self.rig_tools.IMPORTER_BONE_PROPERTIES)
+        for omitted in properties:
+            with self.subTest(omitted=omitted):
+                result = self.rig_tools.classify_snapshot(
+                    armature_name="CustomAvatar",
+                    bone_names=["Root", "Spine"],
+                    bone_property_names=[name for name in properties if name != omitted],
+                    has_armature_deformed_mesh=True,
+                )
+                self.assertTrue(result["rig_ready"])
+                self.assertEqual(result["workflow"], "skinned-fbx")
+
+    def test_finished_import_requires_complete_motor6d_mapping(self):
+        armature = SimpleNamespace(name="ImportedRig", type="ARMATURE")
+        operator = mock.Mock(return_value={"FINISHED"})
+        fake_bpy = SimpleNamespace(
+            ops=SimpleNamespace(object=SimpleNamespace(
+                rbxanims_importmodel=operator,
+                rbxanims_genrig=operator,
+            )),
+            context=SimpleNamespace(
+                scene=SimpleNamespace(),
+                view_layer=SimpleNamespace(objects=SimpleNamespace(active=armature)),
+            ),
+        )
+        valid = self.rig_tools.classify_snapshot(
+            armature_name=armature.name,
+            bone_names=self.rig_tools.R6_PARTS,
+            bone_property_names=self.rig_tools.IMPORTER_BONE_PROPERTIES,
+            has_rig_meta=True,
+            exporter_available=True,
+        )
+        valid.update(associated_rig_meta=True, metadata_bone_count=6)
+        cases = [
+            ("valid", {}, True),
+            ("custom", {"workflow": "verify-before-export"}, False),
+            ("skinned", {"workflow": "skinned-fbx"}, False),
+            ("missing meta", {"associated_rig_meta": False}, False),
+            ("partial mapping", {"importer_metadata": ["transform"]}, False),
+            ("no mapped bones", {"metadata_bone_count": 0}, False),
+            ("missing exporter", {"addon": {"rbxanim_export_operator": False}}, False),
+            ("unready", {"rig_ready": False}, False),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "character.obj"
+            source.write_text("# supplied model\n")
+            for label, changes, expected in cases:
+                with self.subTest(case=label), mock.patch.dict(sys.modules, {"bpy": fake_bpy}), \
+                        mock.patch.object(self.rig_tools, "inspect_rig", return_value=valid | changes):
+                    result = self.rig_tools.import_motor6d_obj(source)
+                self.assertEqual(result["ok"], expected, result)
+                if not expected:
+                    self.assertIn("Imported Motor6D rig is incomplete", result["errors"][0])
 
     def test_rig_type_detection(self):
         self.assertEqual(self.animation_tools.detect_rig_type(self.animation_tools.R15_REQUIRED), "R15")
@@ -248,78 +264,13 @@ class PurePythonScriptTests(unittest.TestCase):
                 decoded = [frame.convert("RGB").getpixel((0, 0)) for frame in ImageSequence.Iterator(gif)]
             self.assertEqual(decoded, colors)
 
-    def test_generated_rig_is_always_rejected(self):
-        result = self.authentic_rig.classify_snapshot(
-            armature_name="GeneratedRig",
-            bone_names=self.animation_tools.R15_REQUIRED,
-            generated_by="any-generator",
-            has_armature_deformed_mesh=True,
-        )
-        self.assertEqual(result["source"], "generated-or-repository-proxy")
-        self.assertEqual(result["workflow"], "diagnostic-only")
-        self.assertFalse(result["authentic_ready"])
-        self.assertFalse(result["authoring_ready"])
 
-    def test_video_style_control_rig_uses_motor6d_workflow(self):
-        result = self.authentic_rig.classify_snapshot(
-            armature_name="__PrimaryArmature",
-            bone_names=["MasterControl", "LowerTorso-FK", "LeftLeg-IK", "RightLeg-IK"],
-        )
-        self.assertEqual(result["source"], "community-r6-ik-fk-control-rig")
-        self.assertEqual(result["workflow"], "motor6d-rbxanim")
-        self.assertFalse(result["authentic_ready"])
-        verified = self.authentic_rig.classify_snapshot(
-            armature_name="__PrimaryArmature",
-            bone_names=["MasterControl", "LowerTorso-FK", "LeftLeg-IK", "RightLeg-IK"],
-            verified_control_rig=True,
-        )
-        self.assertTrue(verified["authentic_ready"])
-        self.assertEqual(result["control_map"]["master"], "MasterControl")
 
-    def test_r6_lineage_hmac_is_stable_across_blender_versions_and_filenames(self):
-        with tempfile.TemporaryDirectory() as directory:
-            bpy_45 = SimpleNamespace(utils=SimpleNamespace(user_resource=lambda _kind: "blender-4.5"))
-            bpy_51 = SimpleNamespace(utils=SimpleNamespace(user_resource=lambda _kind: "blender-5.1"))
-            lineage_id = "a" * 32
-            key_directory = Path(directory) / "stable-user-config"
-            with mock.patch.object(
-                self.authentic_rig,
-                "_r6_lineage_directory",
-                return_value=key_directory,
-            ):
-                signature = self.authentic_rig._r6_lineage_signature(
-                    bpy_51,
-                    lineage_id,
-                    create_key=True,
-                )
-                signature_from_45 = self.authentic_rig._r6_lineage_signature(
-                    bpy_45,
-                    lineage_id,
-                    create_key=False,
-                )
-                armature = {
-                    self.authentic_rig.R6_PROVENANCE_PROPERTY: self.authentic_rig.R6_V222_BLEND_SHA256,
-                    self.authentic_rig.R6_LINEAGE_ID_PROPERTY: lineage_id,
-                    self.authentic_rig.R6_LINEAGE_PROPERTY: signature,
-                }
-                verified_from_45 = self.authentic_rig._r6_lineage_verified(bpy_45, armature)
-                marker_only_verified = self.authentic_rig._r6_lineage_verified(
-                    bpy_45,
-                    {self.authentic_rig.R6_PROVENANCE_PROPERTY: self.authentic_rig.R6_V222_BLEND_SHA256},
-                )
-            self.assertIsNotNone(signature)
-            self.assertEqual(len(signature), 64)
-            self.assertEqual(signature_from_45, signature)
-            self.assertNotIn(lineage_id, signature)
-            key = key_directory / "r6-lineage.key"
-            self.assertEqual(len(key.read_bytes()), 32)
-            self.assertTrue(verified_from_45)
-            self.assertFalse(marker_only_verified)
 
     def test_studio_import_metadata_uses_rbxanim(self):
-        result = self.authentic_rig.classify_snapshot(
+        result = self.rig_tools.classify_snapshot(
             armature_name="ImportedRig",
-            bone_names=self.authentic_rig.R6_PARTS,
+            bone_names=self.rig_tools.R6_PARTS,
             bone_property_names=["is_transformable", "transform", "transform1", "nicetransform"],
             has_rig_meta=True,
             importer_available=True,
@@ -328,15 +279,15 @@ class PurePythonScriptTests(unittest.TestCase):
         self.assertEqual(result["source"], "studio-motor6d-import")
         self.assertEqual(result["workflow"], "motor6d-rbxanim")
         self.assertTrue(result["addon"]["rbxanim_export_operator"])
-        unassociated = self.authentic_rig.classify_snapshot(
+        unassociated = self.rig_tools.classify_snapshot(
             armature_name="ImportedRig",
-            bone_names=self.authentic_rig.R6_PARTS,
+            bone_names=self.rig_tools.R6_PARTS,
             bone_property_names=["is_transformable", "transform", "transform1", "nicetransform"],
             has_rig_meta=False,
             importer_available=True,
             exporter_available=True,
         )
-        self.assertFalse(unassociated["authentic_ready"])
+        self.assertFalse(unassociated["rig_ready"])
         self.assertIn("associated rig metadata", unassociated["reason"].lower())
 
     def test_rig_meta_association_supports_named_rigs_and_rejects_ambiguity(self):
@@ -355,31 +306,16 @@ class PurePythonScriptTests(unittest.TestCase):
         unrelated = FakeObject("__OtherMeta", "EMPTY", [other_master], {"RigMeta": "payload"})
         bpy = SimpleNamespace(data=SimpleNamespace(objects=[armature, matching, unrelated]))
         self.assertEqual(
-            self.authentic_rig._associated_rig_meta_objects(bpy, armature),
+            self.rig_tools._associated_rig_meta_objects(bpy, armature),
             [matching],
         )
         duplicate = FakeObject("__HeroMeta.001", "EMPTY", [master], {"RigMeta": "payload"})
         bpy.data.objects.append(duplicate)
         self.assertEqual(
-            len(self.authentic_rig._associated_rig_meta_objects(bpy, armature)),
+            len(self.rig_tools._associated_rig_meta_objects(bpy, armature)),
             2,
         )
 
-    def test_r15_names_and_mesh_require_explicit_studio_provenance(self):
-        unverified = self.authentic_rig.classify_snapshot(
-            armature_name="R15Like",
-            bone_names=self.authentic_rig.R15_PARTS,
-            has_armature_deformed_mesh=True,
-        )
-        self.assertEqual(unverified["source"], "studio-or-fbx-skinned-r15")
-        self.assertFalse(unverified["authentic_ready"])
-        verified = self.authentic_rig.classify_snapshot(
-            armature_name="StudioR15",
-            bone_names=self.authentic_rig.R15_PARTS,
-            has_armature_deformed_mesh=True,
-            skinned_source="studio-rig-builder",
-        )
-        self.assertTrue(verified["authentic_ready"])
 
     def test_pose_payload_validation_is_atomic_and_strict(self):
         valid = self.animation_tools.validate_pose_payload(
@@ -525,37 +461,8 @@ class PurePythonScriptTests(unittest.TestCase):
             ["AccidentallyKeyed:action:location[0]"],
         )
 
-    def test_toolchain_manifest_pins_real_rig_and_current_addon(self):
-        manifest = self.toolchain.load_manifest()
-        components = {item["id"]: item for item in manifest["components"]}
-        self.assertEqual(components["cautioned-blender-addon"]["version"], "2.6.3")
-        self.assertEqual(components["pillow"]["current_version"], "12.3.0")
-        self.assertTrue(components["cautioned-blender-addon"]["bundled"])
-        self.assertFalse(components["r6-ik-fk-v222"]["bundled"])
-        self.assertEqual(len(components["r6-ik-fk-v222"]["downloads"]), 2)
-        self.assertIn("redistribution license not stated", components["r6-ik-fk-v222"]["license"])
-        self.assertIn("r15-authoring", components["studio-premade-r15"]["required_for"])
 
-    def test_fetcher_rejects_unapproved_hosts_and_unsafe_destinations(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            with self.assertRaises(ValueError):
-                self.fetch_assets._safe_target(root, "../escape")
-            with self.assertRaises(ValueError):
-                self.fetch_assets._download(
-                    "https://example.invalid/model.blend",
-                    root / "model.blend",
-                    "0" * 64,
-                    1,
-                )
 
-    def test_addon_archive_audit_finds_expected_network_but_no_processes(self):
-        path = SKILL / "assets" / "blender-addons" / "rbx_anims_v2.6.3.zip"
-        result = self.toolchain.audit_python_archive(path)
-        self.assertEqual(result["errors"], [])
-        self.assertGreater(result["python_files"], 20)
-        self.assertTrue(result["network_files"])
-        self.assertEqual(result["process_files"], [])
 
     def test_archive_preflight_rejection_preserves_full_result_schema(self):
         expected_keys = {
@@ -687,7 +594,7 @@ class PurePythonScriptTests(unittest.TestCase):
         self.assertFalse(background["ok"])
         self.assertEqual(background["runtime"]["session_mode"], "background")
 
-    def test_r15_bootstrap_requires_all_bundled_addon_operators(self):
+    def test_r15_bootstrap_requires_all_installed_addon_operators(self):
         fake_bpy = SimpleNamespace(
             app=SimpleNamespace(version=(4, 5, 0), background=False),
             ops=SimpleNamespace(object=SimpleNamespace()),
@@ -705,7 +612,7 @@ class PurePythonScriptTests(unittest.TestCase):
             result["runtime"]["operators"],
             {"rbxanim_import": False, "rbxanim_rebuild": False, "rbxanim_export": False},
         )
-        operator_errors = [error for error in result["errors"] if "bundled add-on operator" in error]
+        operator_errors = [error for error in result["errors"] if "installed add-on operator" in error]
         self.assertEqual(len(operator_errors), 3)
         self.assertTrue(any("rbxanim_import" in error for error in operator_errors))
         self.assertTrue(any("rbxanim_rebuild" in error for error in operator_errors))

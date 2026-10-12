@@ -15,18 +15,9 @@ This ordering prevents review objects from entering the Roblox export.
 
 ## Camera and lighting
 
-Inspect the visible model to establish forward direction. R6 V2.22 faces Blender `+Y`; the older nominal front camera at `-Y` shows its back.
+Inspect the visible model to establish forward direction. Choose explicit `camera_location`, `look_target`, and `ortho_scale` values that frame the full action from a three-quarter front view. Use `512 × 512` output, fixed framing, and three review-only area lights (key, fill, rim).
 
-For an origin-centered R6 V2.22 character, use:
-
-- Resolution: `512 × 512`.
-- Orthographic camera: `(6.8, 8.8, 4.8)`.
-- Look target: `(0, 0, 2.55)`.
-- Orthographic scale: `6.4`.
-- Fixed framing for the entire animation.
-- Three review-only area lights: key, fill, and rim.
-
-Use `animation_tools.render_animation_preview_frames()` or the `render-preview` operation. It applies these R6 defaults, renders RGB PNGs, and requires explicit visually chosen camera coordinates for other rigs.
+Use `animation_tools.render_animation_preview_frames()` or the `render-preview` operation to render RGB PNGs with the chosen camera.
 
 ## Loop frames
 

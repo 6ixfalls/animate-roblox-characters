@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/github/license/dillydog580/animate-roblox-characters)](LICENSE)
 [![Agent Skill](https://img.shields.io/badge/Agent%20Skill-Codex%20%7C%20Claude%20Code-6f42c1)](https://skills.sh/dillydog580/animate-roblox-characters/animate-roblox-characters)
 
-`animate-roblox-characters` is an open-source Codex and Claude Code skill for creating complete stylized Roblox R6 and R15 character animations in Blender. It operates on an authentic premade or Studio-derived Roblox rig, handles bone/control inspection, pose planning, keyframing, Graph Editor polish, foot-lock and loop checks, source-appropriate export, a rendered animated GIF preview, and optional Roblox Studio validation.
+`animate-roblox-characters` is an open-source Codex and Claude Code skill for creating complete stylized Roblox R6 and R15 character animations in Blender. It operates on a manually installed Roblox rig, handles bone/control inspection, pose planning, keyframing, Graph Editor polish, foot-lock and loop checks, source-appropriate export, a rendered animated GIF preview, and optional Roblox Studio validation.
 
 Every pose is created on armature pose bones, checked from front and side views, critiqued, corrected, and polished before completion.
 
@@ -29,11 +29,11 @@ Every completed animation includes:
 - Pillow `>=10,<13` for verified shared-palette GIF encoding.
 - Optional: the [Roblox Studio built-in MCP server](https://create.roblox.com/docs/studio/mcp) for Studio-side playback checks.
 
-The repository includes an offline dependency manifest/checker, the current Cautioned Blender extension, and a pinned installer for the authentic premade R6 control rig. It does not bundle Blender or a remote-control server. Follow the linked Blender MCP's `uv`/`uvx` and Blender add-on setup, keep it on localhost, set `DISABLE_TELEMETRY=true`, and leave remote asset integrations disabled because arbitrary Python execution is its intended capability.
+Rigs, Blender add-ons, Blender MCP, and Roblox Studio plugins must be installed manually before using the skill. The repository includes a dependency manifest/checker and animation helpers. Follow the Blender MCP project's setup, keep it on localhost, set `DISABLE_TELEMETRY=true`, and leave remote asset integrations disabled.
 
-For classic Motor6D R6/R15 rigs, use Cautioned's [Blender Animations (ultimate edition)](https://create.roblox.com/store/asset/16708835782/Blender-Animations-ultimate-edition) Studio plugin and the bundled v2.6.3 Blender extension. This preserves joint mapping and exports `.rbxanim`. For verified skinned Roblox rigs, use FBX.
+For classic Motor6D R6/R15 rigs, manually install Cautioned's [Blender Animations (ultimate edition)](https://create.roblox.com/store/asset/16708835782/Blender-Animations-ultimate-edition) Studio plugin and its companion [Blender extension](https://github.com/Cautioned/Blender-Animations-Plugin). This preserves joint mapping and exports `.rbxanim`. For skinned rigs, use FBX.
 
-The colored, labeled R6 control-rig interface seen in the referenced tutorials is [R6 IK + FK Blender Rig V2.22](https://devforum.roblox.com/t/r6-ik-fk-blender-rig-v222/3586405). It is mandatory for generic R6 authoring. The skill downloads the actual `.blend` and matching `.rbxm` directly from the author's attachments and verifies pinned hashes. Because the author did not state a redistribution license, Git does not mirror the source rig binaries.
+Open your installed R6, R15, or custom character rig in Blender. The skill inspects its controls and export mapping at runtime.
 
 Compatible Blender MCPs commonly expose tools named `execute_blender_code` or `blender_python_exec`. The skill discovers capabilities and is not tied to one MCP implementation or tool name.
 
@@ -103,17 +103,9 @@ New-Item -ItemType Directory -Force "$HOME\.claude\skills" | Out-Null
 Copy-Item -Recurse roblox-animation-skill\animate-roblox-characters "$HOME\.claude\skills\"
 ```
 
-## One-time R6 asset setup
+## Manual setup
 
-Install the mandatory premade R6 pair once:
-
-```sh
-# Codex installation
-python3 "$HOME/.agents/skills/animate-roblox-characters/scripts/fetch_assets.py" --component r6-ik-fk-v222
-
-# Claude Code installation
-python3 "$HOME/.claude/skills/animate-roblox-characters/scripts/fetch_assets.py" --component r6-ik-fk-v222
-```
+Install your rig and required Blender/Studio plugins manually, then open the rig in Blender and start its MCP connection.
 
 Install the GIF encoder dependency into the Python environment the agent can use:
 
@@ -123,7 +115,7 @@ python3 -m pip install "Pillow>=10,<13"
 
 On Windows, use `py -3` in place of `python3`.
 
-The user supplies the creative request. The agent prepares or transfers the authentic premade rig and performs the animation workflow. Every completed animation includes the final `.blend`, Roblox animation export, audits/notes, and an animated GIF encoded from sequential RGB renders rather than a screen recording. A network download, plugin install, local file dialog, or Roblox publish permission may require user authorization.
+The user supplies the creative request. The agent inspects the installed rig and performs the animation workflow. Every completed animation includes the final `.blend`, Roblox animation export, audits/notes, and an animated GIF encoded from sequential RGB renders rather than a screen recording. A local file dialog or Roblox publish permission may require user authorization.
 
 ## Crash-safe Blender workflow
 
@@ -136,14 +128,6 @@ If Blender still closes unexpectedly:
 3. Ask the agent to continue from Phase 0; it must inspect the file before resuming.
 4. Keep Blender in the persistent GUI/MCP workflow; do not retry through `blender --background` or an automatically relaunched child process.
 
-## Premade authentic rigs only
-
-- R6 always uses the actual V2.22 premade rig (or an actual Studio-exported R6 target). It includes `__PrimaryArmature`, `MasterControl`, IK/FK, the labeled/colored body controls, body variants, Rig Settings, Utilities, and Rig Texture workflow.
-- R15 always uses a premade Roblox Studio R15 or the user's actual Studio character transferred through Cautioned's tools.
-- The repository contains no generated Roblox player model, neutral imitation, or block-proxy fallback.
-
-The skill obtains the rig from its original author and the transfer tool from its official GitHub/Creator Store sources.
-
 ## Development
 
 Run checks:
@@ -153,8 +137,8 @@ python3 -m unittest discover -s tests -v
 python3 animate-roblox-characters/scripts/toolchain.py --repository-only
 ```
 
-Contributions should keep the canonical phase order and verification rules intact. New rig or MCP adapters must fail clearly when a required capability or premade authentic rig is unavailable and must never generate/substitute a player model or skip pose review.
+Contributions should keep the canonical phase order and verification rules intact. New rig or MCP adapters must fail clearly when a required capability or installed rig is unavailable and must never generate/substitute a player model or skip pose review.
 
 ## License
 
-Repository-authored code is MIT. The bundled Cautioned extension remains GPL-3.0-or-later. License and notice files are included both at repository root and inside the installable skill folder.
+Repository-authored code is MIT. Manually installed dependencies retain their own licenses. License and notice files are included both at repository root and inside the installable skill folder.

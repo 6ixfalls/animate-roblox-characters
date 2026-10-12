@@ -258,24 +258,6 @@ def audit_repository(skill_directory: str | Path = SKILL_DIRECTORY) -> dict[str,
         license_file = component.get("license_file")
         if license_file and not (root / license_file).is_file():
             errors.append(f"Missing third-party license file: {license_file}")
-        if component.get("downloads"):
-            installed = []
-            for download in component["downloads"]:
-                path = root / "assets" / "external" / download["destination"]
-                record = {"path": str(path.relative_to(root)), "exists": path.is_file()}
-                if path.is_file():
-                    record["sha256"] = sha256_file(path)
-                    record["integrity_ok"] = (
-                        record["sha256"] == download["sha256"] and path.stat().st_size == int(download["size"])
-                    )
-                    if not record["integrity_ok"]:
-                        errors.append(f"External asset failed verification: {record['path']}")
-                else:
-                    warnings.append(
-                        f"Pinned external asset is not installed: {record['path']}; run fetch_assets.py for {component['id']}"
-                    )
-                installed.append(record)
-            item["downloads"] = installed
         if component["id"] == "cautioned-blender-addon" and item["files"] and item["files"][0]["exists"]:
             archive_audit = audit_python_archive(root / item["files"][0]["path"])
             item["archive_audit"] = {
@@ -445,7 +427,7 @@ def audit_runtime(
         if r15_bootstrap_required:
             for name in ("rbxanim_import", "rbxanim_rebuild", "rbxanim_export"):
                 if not runtime["operators"].get(name):
-                    errors.append(f"The r15-bootstrap workflow requires the bundled add-on operator: {name}")
+                    errors.append(f"The r15-bootstrap workflow requires the installed add-on operator: {name}")
         elif not runtime["operators"].get("rbxanim_export"):
             warnings.append("Motor6D export add-on is not registered in this Blender session")
     return {"ok": not errors, "runtime": runtime, "errors": errors, "warnings": warnings}

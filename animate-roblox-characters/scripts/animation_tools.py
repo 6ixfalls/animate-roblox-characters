@@ -22,7 +22,7 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 if str(SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-from authentic_rig import export_rbxanim, inspect_authenticity  # noqa: E402
+from rig_tools import export_rbxanim, inspect_rig  # noqa: E402
 
 
 R15_REQUIRED = {
@@ -379,7 +379,7 @@ def _mesh_animation_paths(bpy) -> list[str]:
             continue
         # Custom-shape objects are part of the premade control interface, not
         # character meshes. Their packaged object actions do not animate the
-        # avatar and must not make the authentic R6 master fail its own audit.
+        # avatar and must not make the installed R6 rig fail its own audit.
         if any(obj is control_shape for control_shape in control_shapes):
             continue
         inspect_animation_data(obj, obj.name)
@@ -432,7 +432,7 @@ def inspect_scene(armature_name: str | None = None) -> dict[str, Any]:
             "fps": int(bpy.context.scene.render.fps),
             "mesh_animation_curves": _mesh_animation_paths(bpy),
             "mode": armature.mode,
-            "authenticity": inspect_authenticity(armature),
+            "rig_info": inspect_rig(armature),
         },
         "artifacts": {},
         "warnings": [],
@@ -488,13 +488,13 @@ def apply_pose(payload: dict[str, Any]) -> dict[str, Any]:
             )
         changes["rotation_mode"] = configured_mode
 
-    authenticity = inspect_authenticity(armature)
-    if not authenticity["authentic_ready"]:
+    rig_info = inspect_rig(armature)
+    if not rig_info["rig_ready"]:
         return _error(
-            "Refusing to animate an unverified rig. Use the pinned premade R6 V2.22 asset or an authentic "
+            "The installed armature has no usable controls. Select a "
             "Roblox Studio-derived R6/R15 target.",
             armature=armature.name,
-            metrics={"authenticity": authenticity},
+            metrics={"rig_info": rig_info},
         )
 
     _activate_pose_mode(bpy, armature)
@@ -558,7 +558,7 @@ def apply_pose(payload: dict[str, Any]) -> dict[str, Any]:
             "keyframe_points_updated": changed_points,
             "interpolation": interpolation,
             "action": action.name,
-            "authenticity": authenticity,
+            "rig_info": rig_info,
         },
         "artifacts": artifacts,
         "warnings": warnings,
@@ -677,13 +677,9 @@ def render_pose_views(
         collection = _review_collection(bpy)
         front = _ensure_camera(bpy, "Review_Front", collection)
         side = _ensure_camera(bpy, "Review_Side", collection)
-        authenticity = inspect_authenticity(armature)
+        rig_info = inspect_rig(armature)
         if front_direction is None:
-            if authenticity["source"] != "community-r6-ik-fk-control-rig":
-                raise ValueError(
-                    "Non-R6-V2.22 pose review requires front_direction established from visible-model inspection"
-                )
-            forward = Vector((0.0, 1.0, 0.0))
+            raise ValueError("Pose review requires front_direction established from visible-model inspection")
         else:
             values = tuple(float(value) for value in front_direction)
             if len(values) != 3:
@@ -814,9 +810,9 @@ def render_animation_preview_frames(
     bpy, Vector = _require_blender()
     try:
         armature = _select_armature(bpy, armature_name)
-        authenticity = inspect_authenticity(armature)
-        if not authenticity["authentic_ready"]:
-            raise ValueError("Preview rendering requires a verified authentic Roblox rig")
+        rig_info = inspect_rig(armature)
+        if not rig_info["rig_ready"]:
+            raise ValueError("Preview rendering requires an installed character rig")
         output_dir = Path(output_directory).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         start = int(frame_start)
@@ -832,17 +828,11 @@ def render_animation_preview_frames(
     except (OSError, TypeError, ValueError) as exc:
         return _error(f"Unable to prepare animation preview frames: {exc}", armature=armature_name)
 
-    is_r6_v222 = authenticity["source"] == "community-r6-ik-fk-control-rig"
     if camera_location is None or look_target is None:
-        if not is_r6_v222:
-            return _error(
-                "Non-R6-V2.22 preview requires camera_location and look_target chosen after visual forward-axis inspection",
-                armature=armature.name,
-            )
-        # R6 V2.22 faces Blender +Y. This is the proven three-quarter-front view.
-        camera_position = Vector((6.8, 8.8, 4.8))
-        target = Vector((0.0, 0.0, 2.55))
-        scale = 6.4 if ortho_scale is None else float(ortho_scale)
+        return _error(
+            "Preview requires camera_location and look_target chosen after visual forward-axis inspection",
+            armature=armature.name,
+        )
     else:
         camera_position = Vector(tuple(float(value) for value in camera_location))
         target = Vector(tuple(float(value) for value in look_target))
@@ -938,9 +928,8 @@ def render_animation_preview_frames(
             "camera_location": _as_list(camera.location),
             "look_target": _as_list(target),
             "ortho_scale": scale,
-            "r6_v222_plus_y_default": is_r6_v222 and camera_location is None,
             "review_collection": collection.name,
-            "authenticity": authenticity,
+            "rig_info": rig_info,
         },
         "artifacts": {"frames": rendered, "directory": str(output_dir)},
         "warnings": [],
@@ -1247,19 +1236,13 @@ def audit_action(
     except ValueError as exc:
         return _error(str(exc), armature=armature.name)
 
-    authenticity = inspect_authenticity(armature)
+    rig_info = inspect_rig(armature)
     units_source = None
     if scene_units_per_stud is None and contact_intervals:
         stored_units = armature.get("scene_units_per_stud")
         if stored_units is not None:
             scene_units_per_stud = stored_units
             units_source = "armature-custom-property"
-        elif (
-            authenticity.get("source") == "community-r6-ik-fk-control-rig"
-            and authenticity.get("authentic_ready") is True
-        ):
-            scene_units_per_stud = 1.0
-            units_source = "verified-r6-v2.22-default"
     elif scene_units_per_stud is not None:
         units_source = "explicit-audit-argument"
     if scene_units_per_stud is not None:
@@ -1301,7 +1284,7 @@ def audit_action(
         "loop_required": loop_required,
         "contacts_required": contacts_required,
         "audit_stage": audit_stage,
-        "authenticity": authenticity,
+        "rig_info": rig_info,
     }
     errors = []
     warnings = []
@@ -1317,8 +1300,8 @@ def audit_action(
         errors.append("Final action contains non-Bezier interpolation")
     if not curves_for_action:
         errors.append("The action contains no curves")
-    if not authenticity.get("authentic_ready"):
-        errors.append("The action is not bound to an authentic_ready Roblox rig")
+    if not rig_info.get("rig_ready"):
+        errors.append("The action is not bound to a usable installed rig")
 
     created_animation_data = armature.animation_data is None
     if created_animation_data:
@@ -1418,7 +1401,7 @@ def transfer_action_by_bone_name(
     frame_start: int | None = None,
     frame_end: int | None = None,
 ) -> dict[str, Any]:
-    """Bake an action between two authentic Roblox armatures with matching bone names."""
+    """Bake an action between two installed Roblox armatures with matching bone names."""
     bpy, _Vector = _require_blender()
     try:
         source = _select_armature(bpy, source_armature_name)
@@ -1428,19 +1411,19 @@ def transfer_action_by_bone_name(
     if source == target:
         return _error("Source and target armatures must be different")
 
-    source_authenticity = inspect_authenticity(source)
-    target_authenticity = inspect_authenticity(target)
-    if not source_authenticity["authentic_ready"]:
+    source_rig_info = inspect_rig(source)
+    target_rig_info = inspect_rig(target)
+    if not source_rig_info["rig_ready"]:
         return _error(
-            "Source armature is not an authentic Roblox rig",
+            "Source armature is not an installed Roblox rig",
             armature=source.name,
-            metrics={"source_authenticity": source_authenticity},
+            metrics={"source_rig_info": source_rig_info},
         )
-    if not target_authenticity["authentic_ready"]:
+    if not target_rig_info["rig_ready"]:
         return _error(
-            "Target armature is not an authentic Roblox export target",
+            "Target armature is not an installed Roblox export target",
             armature=target.name,
-            metrics={"target_authenticity": target_authenticity},
+            metrics={"target_rig_info": target_rig_info},
         )
 
     source_action = bpy.data.actions.get(source_action_name) if source_action_name is not None else None
@@ -1572,8 +1555,8 @@ def transfer_action_by_bone_name(
             "frame_end": int(frame_end),
             "matching_bones": common_bones,
             "keyed_values": keyed,
-            "source_authenticity": source_authenticity,
-            "target_authenticity": target_authenticity,
+            "source_rig_info": source_rig_info,
+            "target_rig_info": target_rig_info,
         },
         "artifacts": {},
         "warnings": [],
@@ -1597,18 +1580,18 @@ def export_fbx(
         output.parent.mkdir(parents=True, exist_ok=True)
     except (OSError, ValueError) as exc:
         return _error(f"Unable to prepare FBX export: {exc}", armature=armature_name)
-    authenticity = inspect_authenticity(armature)
-    if not authenticity["authentic_ready"]:
+    rig_info = inspect_rig(armature)
+    if not rig_info["rig_ready"]:
         return _error(
-            "Refusing to export anything except a verified premade or Studio-derived Roblox rig",
+            "Refusing to export anything except a usable installed character rig",
             armature=armature.name,
-            metrics={"authenticity": authenticity},
+            metrics={"rig_info": rig_info},
         )
-    if authenticity["workflow"] == "motor6d-rbxanim":
+    if rig_info["workflow"] != "skinned-fbx":
         return _error(
-            "This is a Motor6D control rig. Export it with export_rbxanim(), not generic FBX.",
+            "FBX requires a skinned rig. For Motor6D mapping, use export_rbxanim().",
             armature=armature.name,
-            metrics={"authenticity": authenticity},
+            metrics={"rig_info": rig_info},
         )
     action = bpy.data.actions.get(action_name) if action_name is not None else None
     if action_name is not None and action is None:
@@ -1734,7 +1717,7 @@ def export_fbx(
             "frame_end": action_end,
             "deform_only": True,
             "bake_step": 1.0,
-            "authenticity": authenticity,
+            "rig_info": rig_info,
         },
         "artifacts": {"fbx": str(output)} if not errors else {},
         "warnings": warnings,

@@ -12,7 +12,7 @@ Viewport screenshots are useful but optional. When no screenshot tool exists, us
 
 Pose-review cameras/lights may be created during blocking only inside the export-excluded `Review` collection. The final GIF camera and three-light setup remain Phase 7 work after export.
 
-Do not enable Blender MCP asset-download features, API keys, or external model services. Use only the pinned `fetch_assets.py` path for the mandatory R6 asset. Bind Blender MCP to localhost, pin the manifest version, and disable all prompt, code, screenshot, and usage telemetry. Arbitrary Python execution is equivalent to local code execution with Blender's user privileges.
+Do not enable Blender MCP asset-download features, API keys, or external model services. Rigs and plugins are installed manually before using the skill. Bind Blender MCP to localhost, pin the manifest version, and disable all prompt, code, screenshot, and usage telemetry. Arbitrary Python execution is equivalent to local code execution with Blender's user privileges.
 
 ## Calling the bundled modules
 
@@ -47,13 +47,13 @@ Treat `ok: false`, non-empty `errors`, or a required `unverified` metric as a fa
 1. Run `session_guard.inspect_session()` and reject background/not-in-Blender modes.
 2. Run `inspect_scene()` before mutation.
 3. If the scene contains unrelated work, save an incremented working copy.
-4. Run `authentic_rig.inspect_authenticity()` on the selected armature. Animate only when `authentic_ready` is true.
-5. If no authentic rig exists, install/copy the pinned premade R6 rig or transfer a premade Studio R15 as described in `roblox-rigs-export.md`. Never generate a substitute.
+4. Run `rig_tools.inspect_rig()` on the selected armature. Animate only when `rig_ready` is true.
+5. If no rig is available, report the missing manual setup prerequisite.
 6. Run `apply_pose()` with a single pose or coherent body-group batch.
 7. Require the returned transforms and review renders before the next batch.
 8. Run `polish_curves()` only after blocking.
 9. Run `audit_action(audit_stage="BLOCKING")` after blocking so intentional constant keys are permitted while hierarchy, mesh-keying, and other supplied checks still run. After polish and immediately before export, run `audit_action(audit_stage="FINAL", loop_required=..., contacts_required=...)`; final mode requires both booleans explicitly and rejects every constant or linear key.
-10. Retarget only between two verified authentic Roblox rigs, then visually verify the target.
+10. Retarget only between two installed Roblox rigs, then visually verify the target.
 11. Save the working `.blend`, then use `export_rbxanim()` for Motor6D rigs or `export_fbx()` for verified skinned rigs.
 
 Do not send a long monolithic script that creates the whole animation without checkpoints. A tool call may insert several coordinated keys for one pose, but it must return and be inspected before continuing.
@@ -79,7 +79,7 @@ Do not send a long monolithic script that creates the whole animation without ch
 }
 ```
 
-Locations are local pose-bone offsets. Euler rotations use the bone's configured rotation order unless an explicit valid Euler `rotation_mode` is supplied. Quaternion rotations use normalized WXYZ order. Never include a name that was not returned by inspection. R6 V2.22 defaults to visible forward `+Y`; every other rig requires `review_front_direction` established from visual inspection.
+Locations are local pose-bone offsets. Euler rotations use the bone's configured rotation order unless an explicit valid Euler `rotation_mode` is supplied. Quaternion rotations use normalized WXYZ order. Never include a name that was not returned by inspection. Every rig requires `review_front_direction` established from visual inspection.
 
 ## Visual critique requirements
 
@@ -99,7 +99,7 @@ Never rename an existing user's bones merely to match a template. Build a role m
 - Missing Python execution: stop before mutation and explain that Blender MCP is required.
 - Background or disposable Blender process: stop before mutation and request an open GUI/MCP session. Never retry by launching another Blender process.
 - Blender disappears or MCP disconnects during render: preserve completed files, do not auto-relaunch Blender, and ask the user to reopen the last saved working copy. Retry with Blender 4.5 LTS if the persistent GUI session remains unstable.
-- Missing premade authentic target: obtain the pinned R6 or Studio R15; if it cannot be obtained or verified, stop before keyframing.
+- Missing rig or plugin: report the missing manual setup prerequisite and stop before keyframing.
 - Multiple plausible armatures: report exact names and request the target.
 - Missing review render: retry once with Blender-rendered views, then mark visual review unverified.
 - Export operator error: preserve the `.blend`, report the operator error, and do not claim an `.rbxanim` or FBX exists.
